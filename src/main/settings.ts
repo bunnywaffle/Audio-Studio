@@ -10,6 +10,7 @@ export interface AppSettings {
   serverHost: string
   theme: 'dark' | 'light'
   defaultLanguage: string
+  autoStartServer: boolean
 }
 
 const DEFAULT_DATA_ROOT = path.join(app.getPath('documents'), 'audio.cpp Studio')
@@ -47,6 +48,7 @@ export function loadSettings(): AppSettings {
     serverHost: s.serverHost ?? '127.0.0.1',
     theme: s.theme ?? 'dark',
     defaultLanguage: s.defaultLanguage ?? 'en',
+    autoStartServer: s.autoStartServer ?? true,
   }
   // auto-detect backend if not set but exists
   if (!merged.backendPath) {

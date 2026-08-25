@@ -282,7 +282,12 @@ function Models(){
   const [filter,setFilter]=useState<'all'|'tts'|'music'|'asr'|'other'>('all')
   const [downloading,setDownloading]=useState<Record<string,number>>({})
   const [query,setQuery]=useState('')
-  const refresh=async()=> setModels(await window.api.listModels())
+  const refresh=async()=>{
+    try{
+      const all = await window.api.listAllModels()
+      setModels(all)
+    }catch{ setModels(await window.api.listModels()) }
+  }
   useEffect(()=>{ refresh(); const off=window.api.onDownloadProgress((d:any)=>{ setDownloading(prev=> ({...prev, [d.id]: d.pct})); if(d.done || d.error) setTimeout(refresh,400)}); return ()=> off && off() },[])
   const filtered=models.filter((m:any)=>{
     if(filter!=='all' && !m.task.includes(filter as any) && !(filter==='other' && !['tts','music','asr'].includes(m.task))) return false
@@ -356,11 +361,20 @@ function SettingsView({settings,setSettings,backend,setBackend,server,setServer}
           <div><label className="small" style={{fontWeight:700}}>Host</label><input className="input mono" value={settings.serverHost} onChange={e=> setSettings({...settings, serverHost:e.target.value})} /></div>
           <div><label className="small" style={{fontWeight:700}}>Port</label><input className="input mono" type="number" value={settings.serverPort} onChange={e=> setSettings({...settings, serverPort: parseInt(e.target.value)||8080})} /></div>
         </div>
+        <label className="row" style={{marginTop:10, cursor:'pointer', userSelect:'none', gap:8, padding:'8px 10px', background:'var(--panel2)', border:'1px solid var(--border)', borderRadius:8}}>
+          <input type="checkbox" checked={!!settings.autoStartServer} onChange={e=> setSettings({...settings, autoStartServer:e.target.checked})} />
+          <span className="small" style={{fontWeight:700, color:'var(--text)'}}>Auto-start server on Generate</span>
+          <span className="small">— if off, falls back to CLI. Recommended ON.</span>
+        </label>
         <div className="row" style={{marginTop:10}}>
-          <button className="btn" disabled={!backend?.hasServer} onClick={async()=>{ const st=await window.api.startServer([]); setServer(st)}}>▶ Start</button>
+          <button className="btn" disabled={!backend?.hasServer} onClick={async()=>{
+            try{ const st=await window.api.startServer([]); setServer(st)}catch(e:any){ alert(e.message) }
+          }}>▶ Start</button>
           <button className="btn ghost" onClick={async()=>{ const st=await window.api.stopServer(); setServer(st)}}>■ Stop</button>
           <span className="small mono" style={{marginLeft:'auto'}}>{server?.running?`pid ${server.pid}`:'stopped'}</span>
+          <button className="btn ghost" onClick={async()=>{ const s=await window.api.serverLog(); alert((s.log||'no log').slice(-1200))}}>View log</button>
         </div>
+        {server?.log && <div className="small mono" style={{marginTop:8, padding:8, background:'var(--panel2)', border:'1px solid var(--border)', borderRadius:8, maxHeight:120, overflow:'auto', whiteSpace:'pre-wrap'}}>{server.log.slice(-800)}</div>}
         <div className="row" style={{marginTop:10}}><button className="btn primary" disabled={saving} onClick={async()=>{ setSaving(true); await window.api.saveSettings(settings); setSaving(false)}}>{saving?'Saving…':'Save'}</button></div>
       </div>
     </div>

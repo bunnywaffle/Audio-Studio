@@ -124,18 +124,43 @@ export function fetchHfFolderFiles(folder:string): Promise<Array<{path:string, s
 
 export async function resolveHfDownloadUrl(modelId:string): Promise<{url:string, fileName:string, size?:number}>{
   const entry = CURATED_MODELS.find(m=> m.id===modelId)
-  if(!entry) throw new Error('Unknown model '+modelId)
-  if(entry.hfFile){
+  if(entry && entry.hfFile){
     const p = entry.hfFile.startsWith(entry.hfFolder||'') ? entry.hfFile : `${entry.hfFolder}/${entry.hfFile}`
     return {url:`${HF_BASE}/${p}`, fileName: path.basename(p)}
   }
-  if(entry.hfFolder){
+  if(entry && entry.hfFolder){
     const files = await fetchHfFolderFiles(entry.hfFolder)
     if(files.length===0) throw new Error(`No .gguf found in ${entry.hfFolder} — browse https://huggingface.co/${HF_REPO}/tree/main/${entry.hfFolder}`)
-    // prefer Q8 or smallest? pick first sorted by size ascending for quick download, but prefer files containing q8 if exist
+    const q8 = files.find(f=> /q8/i.test(f.path))
+    const chosen = q8 || files.sort((a,b)=> a.size-b.size)[0]
+    return {url:`${HF_BASE}/${chosen.path}`, fileName: path.basename(chosen.path), size: chosen.size}
+  }
+  // Fallback: treat modelId as raw HF folder name (for dynamic HF models)
+  if(!entry){
+    const folder = modelId // id is folder name like PocketTTS-GGUF
+    const files = await fetchHfFolderFiles(folder)
+    if(files.length===0) throw new Error(`No .gguf in ${folder}`)
     const q8 = files.find(f=> /q8/i.test(f.path))
     const chosen = q8 || files.sort((a,b)=> a.size-b.size)[0]
     return {url:`${HF_BASE}/${chosen.path}`, fileName: path.basename(chosen.path), size: chosen.size}
   }
   throw new Error(`Model ${modelId} has no HF mapping — check https://huggingface.co/${HF_REPO}/tree/main`)
+}
+
+export function fetchAllHfFolders(): Promise<Array<{folder:string}>>{
+  return new Promise((resolve,reject)=>{
+    const url = `https://huggingface.co/api/models/${HF_REPO}/tree/main`
+    https.get(url, {headers:{'User-Agent':'audio-cpp-studio'} as any}, (res:any)=>{
+      let data=''
+      res.on('data',(c:any)=> data+=c)
+      res.on('end',()=>{
+        if(res.statusCode!==200) return reject(new Error(`HF API ${res.statusCode}: ${data.slice(0,500)}`))
+        try{
+          const j = JSON.parse(data)
+          const dirs = j.filter((x:any)=> x.type==='directory').map((x:any)=>({folder: x.path}))
+          resolve(dirs)
+        }catch(e){ reject(e)}
+      })
+    }).on('error',reject)
+  })
 }

@@ -5,7 +5,7 @@ import * as cp from 'child_process'
 import { loadSettings, saveSettings } from './settings'
 import { detectBackend, importBackendFromZip, runCliHelp, getBackendBin, runServerHealth, fetchGithubReleases, downloadBackendFromUrl } from './backend'
 import { scanInstalled, deleteModel, getModelPath, getModelsDir } from './models'
-import { startServer, stopServer, isServerRunning, getServerPid } from './server'
+import { startServer, stopServer, isServerRunning, getServerPid, getServerStatus } from './server'
 
 let win: BrowserWindow | null = null
 let settings = loadSettings()
@@ -92,6 +92,44 @@ ipcMain.handle('backend:downloadRelease', async (e, url:string)=>{
 })
 
 ipcMain.handle('models:list', async () => scanInstalled(settings.dataRoot))
+ipcMain.handle('models:listAll', async () => {
+  const base = scanInstalled(settings.dataRoot)
+  try{
+    const { fetchAllHfFolders, CURATED_MODELS } = await import('./models')
+    const folders = await fetchAllHfFolders()
+    const curatedFolders = new Set(CURATED_MODELS.map(m=> m.hfFolder).filter(Boolean))
+    const dynamic: any[] = folders.filter(f=> !curatedFolders.has(f.folder)).map(f=>{
+      const id = f.folder.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'')
+      const label = f.folder.replace(/-GGUF$/,'').replace(/-/g,' ')
+      // infer task
+      const n = f.folder.toLowerCase()
+      let task: any = 'other'
+      if(n.includes('tts') || n.includes('voice') || n.includes('vibe') || n.includes('chatter') || n.includes('fish') || n.includes('higgs-tts') || n.includes('index')) task='tts'
+      else if(n.includes('asr') || n.includes('whisper') || n.includes('parakeet') || n.includes('nemotron') || n.includes('qwen3-asr') || n.includes('fun-asr') || n.includes('voxtral') || n.includes('hviske') || n.includes('citrinet') || n.includes('sense')) task='asr'
+      else if(n.includes('music') || n.includes('step') || n.includes('stable') || n.includes('heartmula') || n.includes('minimax')) task='music'
+      else if(n.includes('sep') || n.includes('roformer') || n.includes('demucs')) task='sep'
+      return { id, family: id, label, task, description:`HF folder ${f.folder} — from audio.cpp-gguf`, language:'auto', size:'?', runtime:'GGUF', hfFolder:f.folder, installed:false }
+    })
+    // check installed for dynamic too
+    const installedDirs = fs.existsSync(path.join(settings.dataRoot,'models')) ? new Set(fs.readdirSync(path.join(settings.dataRoot,'models'))) : new Set()
+    dynamic.forEach((m:any)=>{
+      const p = path.join(settings.dataRoot,'models', m.id)
+      m.installed = installedDirs.has(m.id) && fs.existsSync(p) && fs.readdirSync(p).length>0
+      if(m.installed) m.localPath = p
+    })
+    // merge, dedup by id
+    const all = [...base]
+    const baseIds = new Set(base.map(b=> b.id))
+    for(const d of dynamic) if(!baseIds.has(d.id)) all.push(d)
+    return all
+  }catch(e){
+    return base
+  }
+})
+ipcMain.handle('models:listHf', async ()=>{
+  const { fetchAllHfFolders } = await import('./models')
+  return await fetchAllHfFolders()
+})
 ipcMain.handle('models:delete', async (_e, id:string) => {
   deleteModel(settings.dataRoot, id)
   return scanInstalled(settings.dataRoot)
@@ -135,12 +173,23 @@ ipcMain.handle('models:download', async (e, id:string, url?:string) => {
 })
 
 ipcMain.handle('server:start', async (_e, models:any[]) => {
-  if (!settings.backendPath) throw new Error('No backend')
-  const pid = await startServer(settings.backendPath, settings.serverHost, settings.serverPort, models)
-  return { pid, running: isServerRunning() }
+  if (!settings.backendPath) throw new Error('No backend — download from GitHub Releases or Import ZIP in Settings')
+  await startServer(settings.backendPath, settings.serverHost, settings.serverPort, models)
+  return { ...getServerStatus(), host:settings.serverHost, port:settings.serverPort }
 })
-ipcMain.handle('server:stop', async ()=> { await stopServer(); return { running:isServerRunning()} })
-ipcMain.handle('server:status', async ()=> ({ running:isServerRunning(), pid:getServerPid(), host:settings.serverHost, port:settings.serverPort }))
+ipcMain.handle('server:stop', async ()=> { await stopServer(); return { ...getServerStatus(), host:settings.serverHost, port:settings.serverPort } })
+ipcMain.handle('server:status', async ()=> ({ ...getServerStatus(), host:settings.serverHost, port:settings.serverPort }))
+ipcMain.handle('server:log', async ()=> getServerStatus())
+
+async function ensureAutoServer(){
+  if(!settings.autoStartServer) return false
+  if(isServerRunning()) return true
+  if(!settings.backendPath) return false
+  try{
+    await startServer(settings.backendPath, settings.serverHost, settings.serverPort, [])
+    return isServerRunning()
+  }catch(e){ console.log('auto-start failed', e); return false }
+}
 
 // Generation via CLI (fallback) — spawns audiocpp_cli
 async function runCli(args:string[], timeout=120000): Promise<{out:string, err:string, code:number|null}>{
@@ -158,14 +207,15 @@ async function runCli(args:string[], timeout=120000): Promise<{out:string, err:s
 }
 
 ipcMain.handle('gen:tts', async (_e, opts:any) => {
-  // opts: { modelId, text, voiceRef?, voiceId?, language?, outFile? }
   const modelsDir = getModelsDir(settings.dataRoot)
   const modelPath = path.join(modelsDir, opts.modelId)
   if (!fs.existsSync(modelPath)) throw new Error('Model not installed: '+opts.modelId)
   const outDir = path.join(settings.dataRoot,'outputs')
   fs.mkdirSync(outDir,{recursive:true})
   const outFile = opts.outFile || path.join(outDir, `tts_${Date.now()}.wav`)
-  // try server first if running
+  if(settings.autoStartServer && !isServerRunning()){
+    try{ await ensureAutoServer() }catch{}
+  }
   if (isServerRunning()){
     try{
       const res = await fetch(`http://${settings.serverHost}:${settings.serverPort}/v1/audio/speech`,{
@@ -201,6 +251,9 @@ ipcMain.handle('gen:music', async (_e, opts:any)=>{
   const outDir = path.join(settings.dataRoot,'outputs')
   fs.mkdirSync(outDir,{recursive:true})
   const outFile = path.join(outDir, `music_${Date.now()}.wav`)
+  if(settings.autoStartServer && !isServerRunning()){
+    try{ await ensureAutoServer() }catch{}
+  }
   const bin = settings.backendPath ? getBackendBin(settings.backendPath,'cli') : null
   if (!bin){
     fs.writeFileSync(outFile+'.txt', `DEMO MUSIC prompt="${opts.prompt}" lyrics="${(opts.lyrics||'').slice(0,80)}"`)
@@ -218,6 +271,9 @@ ipcMain.handle('gen:asr', async (_e, opts:any)=>{
   const modelPath = path.join(getModelsDir(settings.dataRoot), opts.modelId)
   if (!fs.existsSync(modelPath)) throw new Error('Model not installed')
   if (!opts.audioPath || !fs.existsSync(opts.audioPath)) throw new Error('Audio file not found')
+  if(settings.autoStartServer && !isServerRunning()){
+    try{ await ensureAutoServer() }catch{}
+  }
   if (isServerRunning()){
     try{
       const fd = new FormData()

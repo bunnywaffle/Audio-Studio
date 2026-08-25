@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld('api', {
 
   // models
   listModels: () => ipcRenderer.invoke('models:list'),
+  listAllModels: () => ipcRenderer.invoke('models:listAll'),
+  listHfFolders: () => ipcRenderer.invoke('models:listHf'),
   deleteModel: (id:string) => ipcRenderer.invoke('models:delete', id),
   downloadModel: (id:string, url?:string) => ipcRenderer.invoke('models:download', id, url),
   onDownloadProgress: (cb:(data:any)=>void) => {
@@ -31,6 +33,7 @@ contextBridge.exposeInMainWorld('api', {
   startServer: (models:any[]) => ipcRenderer.invoke('server:start', models),
   stopServer: () => ipcRenderer.invoke('server:stop'),
   serverStatus: () => ipcRenderer.invoke('server:status'),
+  serverLog: () => ipcRenderer.invoke('server:log'),
 
   // generation (via CLI fallback / server)
   tts: (opts:any) => ipcRenderer.invoke('gen:tts', opts),
