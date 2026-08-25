@@ -1,0 +1,59 @@
+{
+  "name": "audio-cpp-studio",
+  "version": "0.1.0",
+  "description": "audio.cpp Studio — Self-contained Electron studio for TTS, Music & ASR powered by audio.cpp",
+  "author": "audio.cpp Studio",
+  "license": "MIT",
+  "private": true,
+  "main": "dist/main/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "dev": "npm run build:main && concurrently \"npm run dev:renderer\" \"npm run dev:electron\"",
+    "dev:renderer": "vite --config vite.config.ts",
+    "dev:electron": "wait-on http://localhost:5173 && electron .",
+    "build:main": "tsc -p tsconfig.node.json",
+    "build:renderer": "vite build",
+    "build": "npm run build:main && npm run build:renderer",
+    "preview": "vite preview",
+    "lint": "tsc --noEmit",
+    "dist": "npm run build && electron-builder --win --x64",
+    "start": "electron ."
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.10"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.5",
+    "@types/node": "^20.11.0",
+    "@types/react": "^18.2.64",
+    "@types/react-dom": "^18.2.21",
+    "@vitejs/plugin-react": "^4.2.1",
+    "concurrently": "^8.2.2",
+    "electron": "^30.5.1",
+    "electron-builder": "^24.9.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "typescript": "^5.4.0",
+    "vite": "^5.1.0",
+    "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "studio.audiocpp.app",
+    "productName": "audio.cpp Studio",
+    "files": [
+      "dist/**/*",
+      "index.html",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

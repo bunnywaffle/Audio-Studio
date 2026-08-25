@@ -1,0 +1,14 @@
+﻿node_modules/
+dist/
+release/
+out/
+.vite/
+.vscode/
+.DS_Store
+*.log
+vite.log
+electron.log
+backend/_downloads/
+models/
+outputs/
+voices/
