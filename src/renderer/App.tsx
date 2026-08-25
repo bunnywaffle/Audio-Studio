@@ -292,7 +292,7 @@ function Models(){
   return (
     <div style={{display:'grid', gap:14}}>
       <div className="card">
-        <div className="row" style={{justifyContent:'space-between'}}><h3 style={{margin:0}}><span className="dot"/> Models — {models.filter((m:any)=> m.installed).length} / {models.length}</h3><button className="btn" onClick={refresh}>↻ Refresh</button></div>
+        <div className="row" style={{justifyContent:'space-between'}}><h3 style={{margin:0}}><span className="dot"/> Models — {models.filter((m:any)=> m.installed).length} / {models.length}</h3><div className="row"><button className="btn ghost" onClick={()=> require('electron').shell.openExternal('https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main')}>Browse HF repo ↗</button><button className="btn" onClick={refresh}>↻ Refresh</button></div></div>
         <div className="row" style={{marginTop:10}}>
           <input className="input" placeholder="Search…" value={query} onChange={e=> setQuery(e.target.value)} style={{maxWidth:320}}/>
           <div className="row">{(['all','tts','music','asr','other'] as const).map(f=>(
@@ -309,10 +309,11 @@ function Models(){
               <div className="small">{m.description}</div>
               <div className="small mono">{m.family} • {m.runtime}</div>
               {isDl && <div className="progress"><i style={{width:`${pct}%`}}></i></div>}
-              <div className="row" style={{marginTop:6}}>
-                {m.installed ? <><span className="badge-installed">● Installed</span><button className="btn ghost" onClick={async()=>{ await window.api.deleteModel(m.id); refresh()}}>Remove</button><button className="btn" onClick={()=> window.api.openFolder(m.localPath)}>Open</button></> : <><button className="btn primary" disabled={isDl} onClick={async()=>{ setDownloading(p=> ({...p,[m.id]:0})); try{ await window.api.downloadModel(m.id)}catch{}}}>⬇ Download</button><button className="btn" onClick={async()=>{
+              <div className="row" style={{marginTop:6, flexWrap:'wrap'}}>
+                {m.installed ? <><span className="badge-installed">● Installed</span><button className="btn ghost" onClick={async()=>{ await window.api.deleteModel(m.id); refresh()}}>Remove</button><button className="btn" onClick={()=> window.api.openFolder(m.localPath)}>Open</button></> : <><button className="btn primary" disabled={isDl} onClick={async()=>{ setDownloading(p=> ({...p,[m.id]:0})); try{ await window.api.downloadModel(m.id)}catch(e:any){ alert(e.message); setDownloading(p=>{const n={...p}; delete n[m.id]; return n})}}}>⬇ Download</button><button className="btn" onClick={async()=>{
                   const url=prompt('Direct GGUF/HF URL for '+m.id); if(url){ setDownloading(p=> ({...p,[m.id]:0})); await window.api.downloadModel(m.id, url)}
                 }}>From URL</button></>}
+                {m.hfFolder && <button className="btn ghost" onClick={()=> require('electron').shell.openExternal(`https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main/${m.hfFolder}`)}>HF ↗</button>}
               </div>
             </div>
           )

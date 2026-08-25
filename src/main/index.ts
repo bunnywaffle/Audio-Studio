@@ -16,7 +16,7 @@ function createWindow() {
     height: 820,
     minWidth: 1020,
     minHeight: 680,
-    backgroundColor: '#0f1115',
+    backgroundColor: '#050507',
     title: 'audio.cpp Studio',
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
@@ -32,10 +32,7 @@ function createWindow() {
     win.webContents.openDevTools({ mode: 'detach' })
   } else {
     win.loadFile(path.join(__dirname, '../renderer/index.html'))
-    win.webContents.openDevTools({ mode: 'detach' })
   }
-  win.webContents.on('did-fail-load', (_e, code, desc, url) => console.error('did-fail-load', code, desc, url))
-  win.webContents.on('console-message', (_e, level, msg) => console.log('renderer console:', msg))
 }
 
 app.whenReady().then(createWindow)
@@ -100,35 +97,41 @@ ipcMain.handle('models:delete', async (_e, id:string) => {
   return scanInstalled(settings.dataRoot)
 })
 ipcMain.handle('models:download', async (e, id:string, url?:string) => {
-  // Placeholder: create folder and simulate progress. Real download would use hf URL.
   const dir = getModelPath(settings.dataRoot, id)
   fs.mkdirSync(dir,{recursive:true})
-  // If url provided attempt real download of single file
-  if (url) {
+  const doDownload = async (dlUrl:string)=>{
     const { downloadFile } = await import('./models')
-    const dest = path.join(dir, path.basename(new URL(url).pathname) || 'model.gguf')
-    let last = 0
+    const dest = path.join(dir, path.basename(new URL(dlUrl).pathname) || 'model.gguf')
+    let last = -1
     const onProg = (pct:number, dl:number, total:number) => {
       if (pct!==last){ last=pct; e.sender.send('models:downloadProgress', { id, pct, dl, total, file: dest }) }
     }
+    // also send 0 immediately
+    e.sender.send('models:downloadProgress', { id, pct:0 })
     try{
-      await downloadFile(url, dest, onProg)
-      e.sender.send('models:downloadProgress', { id, pct:100, done:true })
+      await downloadFile(dlUrl, dest, onProg)
+      e.sender.send('models:downloadProgress', { id, pct:100, done:true, file:dest })
     }catch(err:any){
       e.sender.send('models:downloadProgress', { id, error: err.message })
       throw err
     }
     return scanInstalled(settings.dataRoot)
   }
-  // Demo mode: simulate download
-  for (let pct=0; pct<=100; pct+=10){
-    await new Promise(r=> setTimeout(r,120))
-    e.sender.send('models:downloadProgress', { id, pct })
+  if (url) {
+    return await doDownload(url)
   }
-  // create dummy placeholder so UI shows installed
-  fs.writeFileSync(path.join(dir,'.placeholder'),'download simulated - replace with real gguf')
-  e.sender.send('models:downloadProgress', { id, pct:100, done:true })
-  return scanInstalled(settings.dataRoot)
+  // No URL: resolve via HF repo
+  try{
+    const { resolveHfDownloadUrl } = await import('./models')
+    e.sender.send('models:downloadProgress', { id, pct:0, note:'Resolving HF file…' })
+    const resolved = await resolveHfDownloadUrl(id)
+    // inform UI which file is chosen
+    e.sender.send('models:downloadProgress', { id, pct:1, note:`Downloading ${resolved.fileName}…` })
+    return await doDownload(resolved.url)
+  }catch(err:any){
+    e.sender.send('models:downloadProgress', { id, error: err.message })
+    throw err
+  }
 })
 
 ipcMain.handle('server:start', async (_e, models:any[]) => {

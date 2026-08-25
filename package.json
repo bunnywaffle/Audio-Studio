@@ -1,7 +1,7 @@
-{
+﻿{
   "name": "audio-cpp-studio",
-  "version": "0.1.0",
-  "description": "audio.cpp Studio — Self-contained Electron studio for TTS, Music & ASR powered by audio.cpp",
+  "version": "0.1.1",
+  "description": "audio.cpp Studio â€” Self-contained Electron studio for TTS, Music & ASR powered by audio.cpp",
   "author": "audio.cpp Studio",
   "license": "MIT",
   "private": true,
