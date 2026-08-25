@@ -3,7 +3,7 @@ import * as path from 'path'
 import * as fs from 'fs'
 import * as cp from 'child_process'
 import { loadSettings, saveSettings } from './settings'
-import { detectBackend, importBackendFromZip, runCliHelp, getBackendBin, runServerHealth, fetchGithubReleases, downloadBackendFromUrl } from './backend'
+import { detectBackend, importBackendFromZip, runCliHelp, getBackendBin, runServerHealth, fetchGithubReleases, downloadBackendFromUrl, testBackend } from './backend'
 import { scanInstalled, deleteModel, getModelPath, getModelsDir } from './models'
 import { startServer, stopServer, isServerRunning, getServerPid, getServerStatus } from './server'
 
@@ -77,6 +77,10 @@ ipcMain.handle('backend:cliHelp', async () => {
 })
 ipcMain.handle('backend:health', async () => {
   return await runServerHealth(settings.serverHost, settings.serverPort)
+})
+ipcMain.handle('backend:test', async ()=>{
+  if(!settings.backendPath) throw new Error('No backend')
+  return await testBackend(settings.backendPath)
 })
 ipcMain.handle('backend:listReleases', async ()=> {
   return await fetchGithubReleases(10)

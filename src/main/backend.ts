@@ -105,6 +105,30 @@ export function runCliHelp(backendPath:string): Promise<string> {
   })
 }
 
+export async function testBackend(backendPath:string): Promise<{cli:{ok:boolean, code:number|null, out:string}, server:{ok:boolean, code:number|null, out:string}, hint:string}>{
+  const cliBin = getBackendBin(backendPath,'cli')
+  const srvBin = getBackendBin(backendPath,'server')
+  const run = (bin:string|null): Promise<{ok:boolean, code:number|null, out:string}>=>{
+    if(!bin) return Promise.resolve({ok:false, code:null, out:'not found'})
+    return new Promise(res=>{
+      cp.execFile(bin, ['--help'], {timeout:4000}, (err, stdout, stderr)=>{
+        const out = (stdout||'') + (stderr||'')
+        const code = (err as any)?.code ?? 0
+        const ok = !err || !!stdout
+        res({ok, code: typeof code==='number'? code: null, out: out.slice(0,2000) || (err? err.message: '')})
+      })
+    })
+  }
+  const [cli, server] = await Promise.all([run(cliBin), run(srvBin)])
+  let hint=''
+  const dllCode = 3221225781
+  if(cli.code===dllCode || server.code===dllCode){
+    const hasVCRuntime = fs.existsSync('C:\\Windows\\System32\\vcruntime140.dll')
+    hint = hasVCRuntime ? 'DLL missing is likely CUDA (cudart) — you downloaded CUDA build but have no NVIDIA/CUDA. Pick CPU ZIP.' : 'vcruntime140.dll missing — install VC++ Redist https://aka.ms/vs/17/release/vc_redist.x64.exe'
+  }
+  return {cli, server, hint}
+}
+
 export function runServerHealth(host:string, port:number): Promise<boolean> {
   return new Promise(resolve=>{
     const http = require('http')

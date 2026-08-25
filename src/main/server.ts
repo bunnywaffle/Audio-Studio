@@ -44,11 +44,34 @@ export async function startServer(backendPath:string, host:string, port:number, 
   // wait for health with polling
   const maxWait = 6000
   const start = Date.now()
+  let lastExitCode: number | null = null
+  const exitPromise = new Promise<number|null>(res=>{
+    if(!serverProc) return res(null)
+    serverProc.once('exit', (code)=>{ lastExitCode = code; res(code) })
+  })
   while(Date.now()-start < maxWait){
     await new Promise(r=> setTimeout(r, 500))
     if(!isServerRunning()){
-      const tail = serverLog.slice(-1200)
-      throw new Error(`Server exited quickly. Log:\n${tail}\nCheck that backend ZIP matches your OS (Windows CUDA/CPU) and VC++ runtime is installed.`)
+      const tail = serverLog.slice(-1500)
+      const code = lastExitCode
+      // 3221225781 = 0xC0000135 STATUS_DLL_NOT_FOUND
+      if(code===3221225781 || code===3221225501){
+        const hasCudaDlls = (()=>{ try{
+          const files = fs.readdirSync(path.dirname(bin)).join(' ').toLowerCase() + ' ' + (fs.existsSync(backendPath)? fs.readdirSync(backendPath).join(' ').toLowerCase():'')
+          return files.includes('cudart') || files.includes('cublas') || bin.toLowerCase().includes('cuda')
+        }catch{ return false }})()
+        const hasVCRuntime = fs.existsSync('C:\\Windows\\System32\\vcruntime140.dll') || fs.existsSync('C:\\Windows\\System32\\vcruntime140_1.dll')
+        const isCudaBackend = hasCudaDlls || (backendPath && backendPath.toLowerCase().includes('cuda'))
+        let hint = ''
+        if(!hasVCRuntime) hint += '\n• VC++ 2015-2022 Redistributable NOT found (vcruntime140.dll missing). Install: https://aka.ms/vs/17/release/vc_redist.x64.exe  then reboot.'
+        if(isCudaBackend) hint += '\n• This looks like a CUDA backend (cudart/cublas). It needs: NVIDIA GPU + NVIDIA Driver + CUDA 12 runtime. If you have no NVIDIA GPU or no CUDA, download the CPU backend ZIP instead (choose the non-CUDA asset on GitHub Releases). CUDA ZIPs are ~2GB, CPU ZIPs are smaller.'
+        hint += '\n• Try: Settings → Fetch releases → pick the ZIP with \"cpu\" or \"windows-cpu\" in the name.'
+        hint += '\n• Or test: Settings → Test --help (runs audiocpp_server --help without starting server) to see DLL error.'
+        hint += `\n• Log tail:\n${tail}`
+        hint += `\n• Backend: ${backendPath}\n  Bin: ${bin}\n  Exit code: ${code} (0x${(code>>>0).toString(16)} STATUS_DLL_NOT_FOUND)`
+        throw new Error(`Server failed to start — missing DLL (code ${code}).${hint}`)
+      }
+      throw new Error(`Server exited quickly (code ${lastExitCode}). Log:\n${tail}\nCheck backend ZIP matches OS (Windows CUDA vs CPU) and VC++ runtime is installed. Try CPU build.`)
     }
     try{
       const http = require('http')

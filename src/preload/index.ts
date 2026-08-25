@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('api', {
   checkServerHealth: () => ipcRenderer.invoke('backend:health'),
   listReleases: () => ipcRenderer.invoke('backend:listReleases'),
   downloadRelease: (url:string) => ipcRenderer.invoke('backend:downloadRelease', url),
+  testBackend: () => ipcRenderer.invoke('backend:test'),
   onBackendProgress: (cb:(data:any)=>void)=>{ const h=(_:any,d:any)=> cb(d); ipcRenderer.on('backend:downloadProgress',h); return ()=> ipcRenderer.removeListener('backend:downloadProgress',h) },
 
   // models

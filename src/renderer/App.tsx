@@ -368,13 +368,27 @@ function SettingsView({settings,setSettings,backend,setBackend,server,setServer}
         </label>
         <div className="row" style={{marginTop:10}}>
           <button className="btn" disabled={!backend?.hasServer} onClick={async()=>{
-            try{ const st=await window.api.startServer([]); setServer(st)}catch(e:any){ alert(e.message) }
+            try{ const st=await window.api.startServer([]); setServer(st)}catch(e:any){ alert(e.message + '\n\nTip: If code 3221225781, see hint above — likely missing VC++ or CUDA. Use Test backend →') }
           }}>▶ Start</button>
           <button className="btn ghost" onClick={async()=>{ const st=await window.api.stopServer(); setServer(st)}}>■ Stop</button>
+          <button className="btn" onClick={async()=>{
+            try{
+              const r=await window.api.testBackend()
+              const msg = `CLI: ${r.cli.ok?'✓ ok':'✗ FAIL'} code=${r.cli.code}\nServer: ${r.server.ok?'✓ ok':'✗ FAIL'} code=${r.server.code}\n${r.hint?'\nHint: '+r.hint:''}\n\n--- CLI ---\n${r.cli.out.slice(0,700)}\n\n--- Server ---\n${r.server.out.slice(0,700)}`
+              alert(msg)
+              if(r.cli.code===3221225781 || r.server.code===3221225781){
+                if(confirm('Missing DLL detected (0xC0000135). Open VC++ Redist installer page?')) require('electron').shell.openExternal('https://aka.ms/vs/17/release/vc_redist.x64.exe')
+              }
+            }catch(e:any){ alert(e.message) }
+          }}>Test backend</button>
           <span className="small mono" style={{marginLeft:'auto'}}>{server?.running?`pid ${server.pid}`:'stopped'}</span>
-          <button className="btn ghost" onClick={async()=>{ const s=await window.api.serverLog(); alert((s.log||'no log').slice(-1200))}}>View log</button>
+          <button className="btn ghost" onClick={async()=>{ const s=await window.api.serverLog(); alert((s.log||'no log').slice(-1500) || 'no log yet') }}>View log</button>
         </div>
-        {server?.log && <div className="small mono" style={{marginTop:8, padding:8, background:'var(--panel2)', border:'1px solid var(--border)', borderRadius:8, maxHeight:120, overflow:'auto', whiteSpace:'pre-wrap'}}>{server.log.slice(-800)}</div>}
+        <div className="row" style={{marginTop:8}}>
+          <button className="btn ghost" style={{fontSize:11}} onClick={()=> require('electron').shell.openExternal('https://aka.ms/vs/17/release/vc_redist.x64.exe')}>Install VC++ 2022 Redist ↗</button>
+          <span className="small">3221225781 = STATUS_DLL_NOT_FOUND — usually VC++ or CUDA DLL missing. For no NVIDIA, pick CPU ZIP.</span>
+        </div>
+        {server?.log && <div className="small mono" style={{marginTop:8, padding:8, background:'var(--panel2)', border:'1px solid var(--border)', borderRadius:8, maxHeight:120, overflow:'auto', whiteSpace:'pre-wrap'}}>{server.log.slice(-900)}</div>}
         <div className="row" style={{marginTop:10}}><button className="btn primary" disabled={saving} onClick={async()=>{ setSaving(true); await window.api.saveSettings(settings); setSaving(false)}}>{saving?'Saving…':'Save'}</button></div>
       </div>
     </div>
@@ -405,7 +419,8 @@ function BackendReleases({backend,setBackend,setSettings}:any){
       <div className="row" style={{justifyContent:'space-between'}}><h3 style={{margin:0}}><span className="dot" style={{background:'#FFFFFF'}}/> GitHub Releases — download & update</h3>
         <button className="btn" disabled={loading} onClick={fetchReleases}>{loading?'Fetching…':'↻ Fetch releases'}</button>
       </div>
-      <div className="small" style={{marginTop:6}}>Pulls from <span className="mono">0xShug0/audio.cpp</span> releases. ZIP assets are downloaded to <span className="mono">backend/_downloads</span> and auto-imported to <span className="mono">backend/&lt;version&gt;</span> + <span className="mono">current</span> (updates existing).</div>
+      <div className="small" style={{marginTop:6}}>Pulls from <span className="mono">0xShug0/audio.cpp</span> releases. ZIPs → <span className="mono">backend/_downloads</span> → <span className="mono">backend/&lt;version&gt;</span> + <span className="mono">current</span> (updates).</div>
+      <div className="small" style={{marginTop:6, padding:'6px 8px', background:'rgba(250,204,21,.06)', border:'1px solid rgba(250,204,21,.18)', borderRadius:8}}>No NVIDIA GPU? Pick the <b>CPU</b> ZIP. CUDA ZIP needs NVIDIA driver + CUDA 12 + <a href="#" onClick={e=>{e.preventDefault(); require('electron').shell.openExternal('https://aka.ms/vs/17/release/vc_redist.x64.exe')}}>VC++ Redist</a>.</div>
       {error && <div style={{marginTop:10, padding:10, background:'#1A0E0E', border:'1px solid #3A1F1F', borderRadius:8, color:'#F87171', fontSize:12}}>{error}</div>}
       {!releases && !loading && !error && <div className="small" style={{marginTop:10, padding:10, background:'#0E0E0F', border:'1px dashed var(--border)', borderRadius:8}}>Click <b>Fetch releases</b> to list latest ZIPs — no browser needed.</div>}
       {releases && <div style={{marginTop:12, display:'grid', gap:8, maxHeight:340, overflow:'auto'}}>
@@ -417,12 +432,17 @@ function BackendReleases({backend,setBackend,setSettings}:any){
               {r.zipAssets.map((a:any)=>{
                 const pct=dl[a.url]
                 const isDl=pct!==undefined && pct<100
+                const lower=a.name.toLowerCase()
+                const isCuda=lower.includes('cuda')
+                const isCpu=lower.includes('cpu') || lower.includes('win-cpu')
+                const badge = isCuda ? 'CUDA' : isCpu ? 'CPU' : lower.includes('vulkan') ? 'VULKAN' : 'ZIP'
+                const badgeColor = isCuda ? 'rgba(56,189,248,.12)' : isCpu ? 'rgba(74,222,128,.12)' : 'rgba(255,255,255,.06)'
                 return (
                   <div key={a.url} className="release-card">
-                    <div style={{minWidth:0}}><div style={{fontWeight:600, fontSize:12, wordBreak:'break-all'}}>{a.name}</div><div className="small mono">{(a.size/1024/1024).toFixed(1)} MB • {a.downloads} downloads</div>{isDl && <div className="progress" style={{marginTop:6}}><i style={{width:`${pct}%`}}></i></div>}</div>
+                    <div style={{minWidth:0}}><div style={{display:'flex',gap:6,alignItems:'center'}}><span style={{fontSize:10,padding:'2px 6px',borderRadius:6,background:badgeColor,border:'1px solid var(--border)',fontWeight:700}}>{badge}</span><div style={{fontWeight:600, fontSize:12, wordBreak:'break-all'}}>{a.name}</div></div><div className="small mono">{(a.size/1024/1024).toFixed(1)} MB • {a.downloads} downloads</div>{isDl && <div className="progress" style={{marginTop:6}}><i style={{width:`${pct}%`}}></i></div>}</div>
                     <button className="btn primary" disabled={isDl} style={{flexShrink:0}} onClick={async()=>{
                       setDl(p=> ({...p,[a.url]:0}))
-                      try{ const res=await window.api.downloadRelease(a.url); setBackend(res.info); alert(`Backend ${res.version} installed — now using ${res.backendPath}`)}
+                      try{ const res=await window.api.downloadRelease(a.url); setBackend(res.info); alert(`Backend ${res.version} installed — now using ${res.backendPath}\nIf Start still fails with 3221225781, run Test backend above.`)}
                       catch(e:any){ alert(e.message); setDl(p=> {const n={...p}; delete n[a.url]; return n})}
                     }}>{isDl?`${pct}%`:(backend?.hasCli?'Update →':'Download')}</button>
                   </div>
