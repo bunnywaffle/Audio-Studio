@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('api', {
   listReleases: () => ipcRenderer.invoke('backend:listReleases'),
   downloadRelease: (url:string) => ipcRenderer.invoke('backend:downloadRelease', url),
   testBackend: () => ipcRenderer.invoke('backend:test'),
+  repairBackend: () => ipcRenderer.invoke('backend:repair'),
   listBackendVersions: () => ipcRenderer.invoke('backend:listVersions'),
   selectBackendVersion: (v:string) => ipcRenderer.invoke('backend:selectVersion', v),
   deleteBackendVersion: (v:string) => ipcRenderer.invoke('backend:deleteVersion', v),

@@ -113,6 +113,7 @@ function TTS(){
   const [text,setText]=useState('Hello! audio.cpp Studio is running locally — no Python needed. Try cloning a voice!')
   const [voiceId,setVoiceId]=useState('')
   const [voiceRef,setVoiceRef]=useState('')
+  const [referenceText,setReferenceText]=useState('')
   const [drag,setDrag]=useState(false)
   const [language,setLanguage]=useState('en')
   const [busy,setBusy]=useState(false)
@@ -150,7 +151,7 @@ function TTS(){
 
           <button className="btn primary" style={{width:'100%', justifyContent:'center', padding:'12px', marginTop:14, fontSize:14}} disabled={busy || !modelId || !text.trim()} onClick={async()=>{
             setBusy(true); setResult(null)
-            try{ const r=await window.api.tts({ modelId, family: ttsModels.find((m:any)=> m.id===modelId)?.family, text, voiceRef: voiceRef||undefined, voiceId: voiceId||undefined, language }); setResult(r)}
+            try{ const r=await window.api.tts({ modelId, family: ttsModels.find((m:any)=> m.id===modelId)?.family, text, voiceRef: voiceRef||undefined, voiceId: voiceId||undefined, referenceText: referenceText||undefined, language }); setResult(r)}
             catch(e:any){ setResult({error:e.message}) }
             setBusy(false)
           }}>{busy?'Synthesizing…':'▶ Generate speech'}</button>
@@ -185,8 +186,13 @@ function TTS(){
               <input className="input mono" value={voiceRef} onChange={e=> setVoiceRef(e.target.value)} placeholder="or paste full path" style={{flex:1, fontSize:11}} />
               <button className="btn" onClick={async()=>{const f=await window.api.chooseFile([{name:'Audio', extensions:['wav','mp3','flac','ogg','m4a']}]); if(f) setVoiceRef(f)}}>Browse</button>
             </div>
+            <div style={{marginTop:10}}>
+              <label className="small" style={{fontWeight:700}}>Reference transcript <span style={{fontWeight:400, color:'var(--muted)'}}>(Qwen3 ICL — required for Qwen3 clone)</span></label>
+              <textarea className="textarea" style={{minHeight:56, fontSize:12}} value={referenceText} onChange={e=> setReferenceText(e.target.value)} placeholder='Exact transcript of reference audio (e.g. "Some call me nature. Others call me Mother Nature..."). Required for Qwen3 ICL, optional for others — improves clone quality.' />
+              <div className="small" style={{marginTop:4}}>If you see “Qwen3 voice clone ICL mode requires reference text”, paste the exact words spoken in the reference wav.</div>
+            </div>
             <div style={{marginTop:10, padding:'9px 10px', borderRadius:10, background:'var(--panel2)', border:'1px solid var(--border)', fontSize:11, lineHeight:1.5, color:'var(--muted)'}}>
-              <b style={{color:'var(--text)'}}>Tip</b> — your own voice = instant host. No echo, no bgm.
+              <b style={{color:'var(--text)'}}>Tip</b> — your own voice = instant host. No echo, no bgm. For Qwen3, add the transcript above.
             </div>
           </div>
 
@@ -353,6 +359,15 @@ function SettingsView({settings,setSettings,backend,setBackend,server,setServer}
           <div className="row" style={{marginTop:10, flexWrap:'wrap'}}>
             <button className="btn" onClick={async()=>{const f=await window.api.chooseFile([{name:'Backend ZIP', extensions:['zip']}]); if(f){ const r=await window.api.importBackendZip(f); setBackend(r.info); const ns=await window.api.getSettings(); setSettings(ns)}}}>📦 Import ZIP</button>
             <button className="btn" onClick={async()=>{ try{ const h=await window.api.runCliHelp(); alert(h.slice(0,700)) }catch(e:any){ alert(e.message)} }}>Test --help</button>
+            <button className="btn" onClick={async()=>{
+              if(!confirm('Repair backend? This will check for missing/corrupt files (audiocpp_cli.exe, server, DLLs) and re-extract or re-download the current version if needed. Continue?')) return
+              try{
+                const r:any = await window.api.repairBackend()
+                setBackend(r.info)
+                alert((r.repaired ? '✓ Repaired! ' : 'Info: ') + r.details)
+                const s=await window.api.getSettings(); setSettings(s)
+              }catch(e:any){ alert('Repair failed: '+e.message) }
+            }}>Repair</button>
             <button className="btn ghost" onClick={()=> backend?.path && window.api.openFolder(backend.path)}>Open folder</button>
             {backend?.hasCli && <span className="small" style={{marginLeft:'auto'}}>Existing backend will be updated when you download a new release ↓</span>}
           </div>

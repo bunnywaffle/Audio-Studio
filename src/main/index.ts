@@ -3,7 +3,7 @@ import * as path from 'path'
 import * as fs from 'fs'
 import * as cp from 'child_process'
 import { loadSettings, saveSettings } from './settings'
-import { detectBackend, importBackendFromZip, runCliHelp, getBackendBin, runServerHealth, fetchGithubReleases, downloadBackendFromUrl, testBackend, listBackends, selectBackend, deleteBackend } from './backend'
+import { detectBackend, importBackendFromZip, runCliHelp, getBackendBin, runServerHealth, fetchGithubReleases, downloadBackendFromUrl, testBackend, listBackends, selectBackend, deleteBackend, repairBackend } from './backend'
 import { scanInstalled, deleteModel, getModelPath, getModelsDir } from './models'
 import { startServer, stopServer, isServerRunning, getServerPid, getServerStatus } from './server'
 
@@ -98,6 +98,18 @@ ipcMain.handle('backend:deleteVersion', async (_e, version:string)=>{
   }
   deleteBackend(settings.dataRoot, version)
   return listBackends(settings.dataRoot, settings.backendVersion)
+})
+ipcMain.handle('backend:repair', async (e)=>{
+  const onProg = (pct:number, dl:number, total:number)=>{ try{ e.sender.send('backend:downloadProgress', {url:'repair', pct, dl, total})}catch{} }
+  const r = await repairBackend(settings.dataRoot, onProg)
+  // after repair, update settings if version changed
+  if(r.repaired){
+    settings.backendPath = r.backendPath
+    // try to keep version as before, but repair may have updated
+    saveSettings(settings)
+  }
+  e.sender.send('backend:downloadProgress', {url:'repair', pct:100, done:true})
+  return { ...r, info: detectBackend(settings.backendPath), versions: listBackends(settings.dataRoot, settings.backendVersion) }
 })
 ipcMain.handle('backend:listReleases', async ()=> {
   return await fetchGithubReleases(10)
@@ -289,7 +301,7 @@ ipcMain.handle('gen:tts', async (_e, opts:any) => {
     try{
       const res = await fetch(`http://${settings.serverHost}:${settings.serverPort}/v1/audio/speech`,{
         method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ model: opts.modelId, input: opts.text, voice: opts.voiceId || undefined })
+        body: JSON.stringify({ model: opts.modelId, input: opts.text, voice: opts.voiceId || undefined, reference_text: opts.referenceText || undefined })
       })
       if (res.ok){
         const buf = Buffer.from(await res.arrayBuffer())
@@ -322,11 +334,15 @@ ipcMain.handle('gen:tts', async (_e, opts:any) => {
   }
   const args = ['--task','tts','--family', opts.family||opts.modelId, '--model', modelPath, '--text', opts.text, '--out', outFile]
   if (voiceRefToUse) args.push('--voice-ref', voiceRefToUse)
+  if (opts.referenceText) args.push('--reference-text', opts.referenceText)
   if (opts.voiceId) args.push('--voice-id', opts.voiceId)
   if (opts.language) args.push('--load-option', `language=${opts.language}`)
   const r = await runCli(args)
   if (!fs.existsSync(outFile)){
     const errLower = (r.err + r.out).toLowerCase()
+    if(errLower.includes('reference text') || errLower.includes('icl mode requires')){
+      throw new Error(`CLI failed — Qwen3 voice clone ICL mode requires reference text.\n${(r.err||r.out).slice(0,700)}\n\nFix: In the TTS panel, paste the exact transcript of your reference audio into the "Reference transcript" field. Example: "Some call me nature. Others call me Mother Nature." This is required for Qwen3 when using --voice-ref.`)
+    }
     if(errLower.includes('invalid wav') || errLower.includes('riff') || errLower.includes('wav riff')){
       const base = `CLI failed — invalid WAV RIFF header for voice file "${opts.voiceRef}".\n${(r.err||r.out).slice(0,700)}`
       if(voiceWarning) throw new Error(base + `\n\nAlso: ${voiceWarning}\n\nFix: convert to WAV 16k mono: ffmpeg -i "${opts.voiceRef}" -ar 16000 -ac 1 -c:a pcm_s16le voice_16k.wav`)

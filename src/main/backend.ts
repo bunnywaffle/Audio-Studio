@@ -173,9 +173,103 @@ export function deleteBackend(dataRoot:string, version:string){
   if(version==='current') throw new Error('Cannot delete active current — select another version first or delete via version folder')
   const p = path.join(root, version)
   if(!fs.existsSync(p)) throw new Error('Not found: '+version)
-  // safety: only allow deleting inside backend folder
   if(!p.startsWith(root)) throw new Error('Invalid path')
   fs.rmSync(p,{recursive:true,force:true})
+}
+
+export async function repairBackend(dataRoot:string, onProgress?:(pct:number, dl:number, total:number)=>void): Promise<{backendPath:string, version:string, repaired:boolean, details:string}>{
+  const root = path.join(dataRoot,'backend')
+  const current = path.join(root,'current')
+  const versionFile = path.join(root,'..','..','..','..','..') // dummy
+  // Determine current version from settings or from folder
+  let currentVersion: string | null = null
+  try{
+    const settingsPath = path.join(require('electron').app.getPath('userData'), 'settings.json')
+    if(fs.existsSync(settingsPath)){
+      const s = JSON.parse(fs.readFileSync(settingsPath,'utf-8'))
+      currentVersion = s.backendVersion || null
+    }
+  }catch{}
+  if(!currentVersion){
+    // fallback: try to read VERSION file in current
+    try{ currentVersion = fs.readFileSync(path.join(current,'VERSION'),'utf-8').trim() }catch{}
+  }
+  if(!currentVersion){
+    // fallback: use folder name of current's source if we can infer
+    currentVersion = 'current'
+  }
+
+  const required = ['audiocpp_cli.exe','audiocpp_server.exe','vcruntime140.dll']
+  const missing: string[] = []
+  for(const f of required){
+    const p = path.join(current, f)
+    if(!fs.existsSync(p) || fs.statSync(p).size===0) missing.push(f)
+  }
+  // also check for corrupt (size < 1KB for exe is suspicious)
+  for(const f of ['audiocpp_cli.exe','audiocpp_server.exe']){
+    const p = path.join(current, f)
+    if(fs.existsSync(p)){
+      const sz = fs.statSync(p).size
+      if(sz < 1024*10) missing.push(f + ' (corrupt, size '+sz+')')
+    }
+  }
+
+  if(missing.length===0){
+    return {backendPath: current, version: currentVersion||'current', repaired:false, details:'No missing files detected — backend looks healthy. Files: '+ required.join(', ')}
+  }
+
+  let details = `Missing/corrupt: ${missing.join(', ')}. `
+  // Try to find ZIP in _downloads
+  const dlDir = path.join(root,'_downloads')
+  let zipCandidate: string | null = null
+  if(fs.existsSync(dlDir)){
+    const zips = fs.readdirSync(dlDir).filter(f=> f.endsWith('.zip'))
+    // prefer one containing currentVersion
+    if(currentVersion){
+      zipCandidate = zips.find(z=> z.includes(currentVersion)) || null
+    }
+    if(!zipCandidate && zips.length>0) zipCandidate = zips[0]
+    if(zipCandidate) zipCandidate = path.join(dlDir, zipCandidate)
+  }
+  // If version folder exists and is healthy, just recopy it
+  const versionFolder = currentVersion ? path.join(root, currentVersion) : null
+  if(versionFolder && fs.existsSync(versionFolder)){
+    const verInfo = detectBackend(versionFolder)
+    if(verInfo.hasCli && verInfo.hasServer){
+      // recopy from version folder
+      try{
+        if(fs.existsSync(current)) fs.rmSync(current,{recursive:true,force:true})
+        fs.cpSync(versionFolder, current, {recursive:true})
+        return {backendPath: current, version: currentVersion||'current', repaired:true, details: details + `Repaired by recopying from version folder ${currentVersion}.`}
+      }catch(e:any){ details += `Recopy failed: ${e.message}. ` }
+    }
+  }
+
+  if(zipCandidate && fs.existsSync(zipCandidate)){
+    try{
+      const r = await importBackendFromZip(zipCandidate, dataRoot)
+      return {backendPath: r.backendPath, version: r.version, repaired:true, details: details + `Repaired by re-extracting ZIP ${path.basename(zipCandidate)}.`}
+    }catch(e:any){ details += `Re-extract failed: ${e.message}. ` }
+  }
+
+  // Fallback: try GitHub re-download if version looks like a release tag
+  if(currentVersion){
+    try{
+      const releases = await fetchGithubReleases(12)
+      for(const rel of releases){
+        for(const asset of rel.zipAssets){
+          if(asset.name.includes(currentVersion) || currentVersion.includes(rel.tag)){
+            // found matching asset, re-download
+            const dlRes = await downloadBackendFromUrl(asset.url, dataRoot, onProgress)
+            return {backendPath: dlRes.backendPath, version: dlRes.version, repaired:true, details: details + `Re-downloaded from GitHub ${asset.name} (${rel.tag}).`}
+          }
+        }
+      }
+    }catch(e:any){ details += `GitHub fetch failed: ${e.message}. ` }
+  }
+
+  // Last resort: just report missing
+  throw new Error(details + 'No repair source found. Try manually re-downloading a backend ZIP via Settings → Fetch releases → pick CPU ZIP, or Import ZIP.')
 }
 
 export function runCliHelp(backendPath:string): Promise<string> {
