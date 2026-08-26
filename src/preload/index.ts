@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld('api', {
   listModels: () => ipcRenderer.invoke('models:list'),
   listAllModels: () => ipcRenderer.invoke('models:listAll'),
   listHfFolders: () => ipcRenderer.invoke('models:listHf'),
+  getModelVariants: (id:string) => ipcRenderer.invoke('models:getVariants', id),
   deleteModel: (id:string) => ipcRenderer.invoke('models:delete', id),
   downloadModel: (id:string, url?:string) => ipcRenderer.invoke('models:download', id, url),
   onDownloadProgress: (cb:(data:any)=>void) => {

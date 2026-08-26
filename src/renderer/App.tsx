@@ -291,6 +291,9 @@ function Models(){
   const [filter,setFilter]=useState<'all'|'tts'|'music'|'asr'|'other'>('all')
   const [downloading,setDownloading]=useState<Record<string,number>>({})
   const [query,setQuery]=useState('')
+  const [expanded,setExpanded]=useState<string|null>(null)
+  const [variants,setVariants]=useState<Record<string,any[]>>({})
+  const [loadingV,setLoadingV]=useState<Record<string,boolean>>({})
   const refresh=async()=>{
     try{
       const all = await window.api.listAllModels()
@@ -303,6 +306,17 @@ function Models(){
     if(query && !`${m.label} ${m.family} ${m.description}`.toLowerCase().includes(query.toLowerCase())) return false
     return true
   })
+  const fmtSize=(b:number)=> b>1024*1024*1024 ? `${(b/1024/1024/1024).toFixed(2)} GB` : b>1024*1024 ? `${(b/1024/1024).toFixed(0)} MB` : `${(b/1024).toFixed(0)} KB`
+  const loadVariants=async(id:string)=>{
+    if(variants[id]){ setExpanded(expanded===id?null:id); return }
+    setLoadingV(p=>({...p,[id]:true}))
+    try{
+      const v = await window.api.getModelVariants(id)
+      setVariants(p=>({...p,[id]:v}))
+      setExpanded(id)
+    }catch(e:any){ alert(e.message) }
+    setLoadingV(p=>({...p,[id]:false}))
+  }
   return (
     <div style={{display:'grid', gap:14}}>
       <div className="card">
@@ -313,22 +327,50 @@ function Models(){
             <button key={f} className={filter===f?'btn primary':'btn'} onClick={()=> setFilter(f)}>{f}</button>
           ))}</div>
         </div>
+        <div className="small" style={{marginTop:8}}>Each HF folder has <b>Q8</b> / <b>Q16/BF16</b> etc. Click <b>Versions</b> to see sizes and pick — Q8 is smaller & faster.</div>
       </div>
-      <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(340px,1fr))', gap:10}}>
+      <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(360px,1fr))', gap:10}}>
         {filtered.map((m:any)=>{
           const pct=downloading[m.id]; const isDl= pct!==undefined && pct<100
+          const isExpanded = expanded===m.id
+          const vlist = variants[m.id] || []
           return (
             <div key={m.id} className={`model-card ${m.installed?'installed':''}`}>
               <div className="row" style={{justifyContent:'space-between'}}><div style={{fontWeight:700, fontSize:13}}>{m.label}</div><span className="tag">{m.task.toUpperCase()} • {m.size}</span></div>
               <div className="small">{m.description}</div>
-              <div className="small mono">{m.family} • {m.runtime}</div>
+              <div className="small mono">{m.family} • {m.runtime} {m.hfFolder && `• ${m.hfFolder}`}</div>
               {isDl && <div className="progress"><i style={{width:`${pct}%`}}></i></div>}
+              {isDl && <div className="small mono">{pct}% {downloading[m.id+'_note']||''}</div>}
               <div className="row" style={{marginTop:6, flexWrap:'wrap'}}>
-                {m.installed ? <><span className="badge-installed">● Installed</span><button className="btn ghost" onClick={async()=>{ await window.api.deleteModel(m.id); refresh()}}>Remove</button><button className="btn" onClick={()=> window.api.openFolder(m.localPath)}>Open</button></> : <><button className="btn primary" disabled={isDl} onClick={async()=>{ setDownloading(p=> ({...p,[m.id]:0})); try{ await window.api.downloadModel(m.id)}catch(e:any){ alert(e.message); setDownloading(p=>{const n={...p}; delete n[m.id]; return n})}}}>⬇ Download</button><button className="btn" onClick={async()=>{
-                  const url=prompt('Direct GGUF/HF URL for '+m.id); if(url){ setDownloading(p=> ({...p,[m.id]:0})); await window.api.downloadModel(m.id, url)}
-                }}>From URL</button></>}
+                {m.installed ? <><span className="badge-installed">● Installed</span><button className="btn ghost" onClick={async()=>{ await window.api.deleteModel(m.id); refresh()}}>Remove</button><button className="btn" onClick={()=> window.api.openFolder(m.localPath)}>Open</button></> : <>
+                  <button className="btn" disabled={loadingV[m.id]} onClick={()=> loadVariants(m.id)}>{loadingV[m.id]?'Loading…': isExpanded ? 'Hide versions' : 'Versions'}</button>
+                  <button className="btn primary" disabled={isDl} onClick={async()=>{ setDownloading(p=> ({...p,[m.id]:0})); try{ await window.api.downloadModel(m.id)}catch(e:any){ alert(e.message); setDownloading(p=>{const n={...p}; delete n[m.id]; return n})}}}>⬇ Quick Q8</button>
+                  <button className="btn" onClick={async()=>{
+                    const url=prompt('Direct GGUF/HF URL for '+m.id); if(url){ setDownloading(p=> ({...p,[m.id]:0})); await window.api.downloadModel(m.id, url)}
+                  }}>From URL</button>
+                </>}
                 {m.hfFolder && <button className="btn ghost" onClick={()=> require('electron').shell.openExternal(`https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main/${m.hfFolder}`)}>HF ↗</button>}
               </div>
+              {isExpanded && (
+                <div style={{marginTop:8, padding:8, background:'var(--bg)', border:'1px solid var(--border)', borderRadius:8}}>
+                  <div className="small" style={{fontWeight:700, marginBottom:6}}>Available GGUF versions — {vlist.length} files</div>
+                  {vlist.length===0 && <div className="small">No .gguf found or HF API failed.</div>}
+                  <div style={{display:'grid', gap:6, maxHeight:220, overflow:'auto'}}>
+                    {vlist.map((v:any)=>(
+                      <div key={v.path} className="release-card" style={{padding:'8px 10px'}}>
+                        <div style={{minWidth:0, flex:1}}>
+                          <div style={{fontWeight:600, fontSize:11, wordBreak:'break-all'}}>{v.fileName}</div>
+                          <div className="small mono"><span style={{padding:'2px 6px', borderRadius:6, background:'var(--panel2)', border:'1px solid var(--border)', fontWeight:700}}>{v.precision.toUpperCase()}</span> • {fmtSize(v.size)} • {v.path}</div>
+                        </div>
+                        <button className="btn primary" style={{flexShrink:0, padding:'6px 10px', fontSize:11}} disabled={isDl} onClick={async()=>{
+                          setDownloading(p=> ({...p,[m.id]:0}))
+                          try{ await window.api.downloadModel(m.id, v.url)}catch(e:any){ alert(e.message); setDownloading(p=>{const n={...p}; delete n[m.id]; return n})}
+                        }}>⬇ {v.precision.toUpperCase()}</button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )
         })}

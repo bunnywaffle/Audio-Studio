@@ -163,6 +163,10 @@ ipcMain.handle('models:listHf', async ()=>{
   const { fetchAllHfFolders } = await import('./models')
   return await fetchAllHfFolders()
 })
+ipcMain.handle('models:getVariants', async (_e, id:string)=>{
+  const { getModelVariants } = await import('./models')
+  return await getModelVariants(id)
+})
 ipcMain.handle('models:delete', async (_e, id:string) => {
   deleteModel(settings.dataRoot, id)
   return scanInstalled(settings.dataRoot)

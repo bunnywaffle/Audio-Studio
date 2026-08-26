@@ -164,3 +164,28 @@ export function fetchAllHfFolders(): Promise<Array<{folder:string}>>{
     }).on('error',reject)
   })
 }
+
+export async function getModelVariants(modelId:string): Promise<Array<{fileName:string, url:string, size:number, precision:string, path:string}>>{
+  const entry = CURATED_MODELS.find(m=> m.id===modelId)
+  const folder = entry?.hfFolder || modelId
+  // try to handle sanitized ids for dynamic models: if entry not found and folder looks sanitized, try to find original
+  let targetFolder = folder
+  if(!entry){
+    // try to find matching HF folder by sanitized id
+    try{
+      const all = await fetchAllHfFolders()
+      const sanitized = (s:string)=> s.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'')
+      const found = all.find(f=> sanitized(f.folder)===modelId)
+      if(found) targetFolder = found.folder
+    }catch{}
+  }
+  const files = await fetchHfFolderFiles(targetFolder)
+  return files.map(f=>{
+    const fileName = path.basename(f.path)
+    const m = fileName.match(/(q8_0|q4_k|q5_k|q6_k|q8|q4|q2_k|q3_k|bf16|f16|f32|orig|int8)/i)
+    let precision = m ? m[0].toLowerCase() : 'gguf'
+    // also include full precision like q8_0
+    if(/q8/i.test(fileName) && !precision.includes('q8')) precision = 'q8'
+    return {fileName, url: `${HF_BASE}/${f.path}`, size: f.size, precision, path: f.path}
+  }).sort((a,b)=> a.size - b.size)
+}
