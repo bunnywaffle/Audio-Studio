@@ -355,6 +355,8 @@ function SettingsView({settings,setSettings,backend,setBackend,server,setServer}
           </div>
         </div>
 
+        <BackendVersions backend={backend} setBackend={setBackend} setSettings={setSettings} />
+
         <BackendReleases backend={backend} setBackend={setBackend} setSettings={setSettings} />
         <div className="divider" />
         <div className="grid2">
@@ -390,6 +392,37 @@ function SettingsView({settings,setSettings,backend,setBackend,server,setServer}
         </div>
         {server?.log && <div className="small mono" style={{marginTop:8, padding:8, background:'var(--panel2)', border:'1px solid var(--border)', borderRadius:8, maxHeight:120, overflow:'auto', whiteSpace:'pre-wrap'}}>{server.log.slice(-900)}</div>}
         <div className="row" style={{marginTop:10}}><button className="btn primary" disabled={saving} onClick={async()=>{ setSaving(true); await window.api.saveSettings(settings); setSaving(false)}}>{saving?'Saving…':'Save'}</button></div>
+      </div>
+    </div>
+  )
+}
+
+function BackendVersions({backend,setBackend,setSettings}:any){
+  const [versions,setVersions]=useState<any[]>([])
+  const refresh=async()=>{ try{ setVersions(await window.api.listBackendVersions()) }catch{} }
+  useEffect(()=>{ refresh() },[backend])
+  if(versions.length===0) return (
+    <div className="card">
+      <div className="row" style={{justifyContent:'space-between'}}><h3 style={{margin:0}}><span className="dot" style={{background:'#9CA3AF'}}/> Installed backends</h3><button className="btn" onClick={refresh}>↻ Refresh</button></div>
+      <div className="small" style={{marginTop:8}}>No versioned backends yet — download from Releases or Import ZIP. Versions appear here and you can switch/delete.</div>
+    </div>
+  )
+  return (
+    <div className="card">
+      <div className="row" style={{justifyContent:'space-between'}}><h3 style={{margin:0}}><span className="dot" style={{background:'#9CA3AF'}}/> Installed backends — select or delete</h3><button className="btn" onClick={refresh}>↻ Refresh</button></div>
+      <div style={{marginTop:8, display:'grid', gap:6}}>
+        {versions.map((v:any)=>(
+          <div key={v.version} className="release-card" style={{borderColor: v.isCurrent ? '#22C55E' : undefined, background: v.isCurrent ? 'rgba(34,197,94,.06)' : undefined}}>
+            <div style={{minWidth:0}}>
+              <div style={{display:'flex',gap:6,alignItems:'center'}}><b style={{fontSize:12}}>{v.version}</b>{v.isCurrent && <span className="badge-installed">● active</span>}<span className="small mono">{v.hasCli?'CLI':'no CLI'} • {v.hasServer?'Server':'no server'} • {v.sizeMB} MB</span></div>
+              <div className="small mono" style={{wordBreak:'break-all'}}>{v.path}</div>
+            </div>
+            <div className="row" style={{flexShrink:0}}>
+              {!v.isCurrent ? <button className="btn" onClick={async()=>{ try{ const r=await window.api.selectBackendVersion(v.version); setBackend(r.info); const s=await window.api.getSettings(); setSettings(s)}catch(e:any){ alert(e.message)}}}>Select</button> : <span className="pill live">● Current</span>}
+              {v.version!=='current' && <button className="btn ghost" onClick={async()=>{ if(confirm(`Delete backend ${v.version}?`)){ try{ const nv=await window.api.deleteBackendVersion(v.version); setVersions(nv); const b=await window.api.getBackendInfo(); setBackend(b)}catch(e:any){ alert(e.message)}}}}>Delete</button>}
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   )

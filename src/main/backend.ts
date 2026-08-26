@@ -94,6 +94,91 @@ export async function importBackendFromZip(zipPath: string, dataRoot: string): P
   return { backendPath: current, version }
 }
 
+export interface BackendVersion {
+  version: string
+  path: string
+  isCurrent: boolean
+  hasCli: boolean
+  hasServer: boolean
+  sizeMB: number
+  mtime: number
+  files: string[]
+}
+
+export function listBackends(dataRoot:string): BackendVersion[]{
+  const root = path.join(dataRoot,'backend')
+  if(!fs.existsSync(root)) return []
+  const entries = fs.readdirSync(root)
+  const out: BackendVersion[] = []
+  const currentPath = path.join(root,'current')
+  let currentTarget = ''
+  try{
+    if(fs.existsSync(currentPath)){
+      // current is a copy, not symlink — try to infer by comparing file lists or version file
+      // we store version in settings, but also check if any version folder has same content as current via VERSION file or file count
+    }
+  }catch{}
+  for(const e of entries){
+    if(e.startsWith('_') || e==='current' || e==='logs' || e==='_downloads') continue
+    const full = path.join(root, e)
+    try{
+      const st = fs.statSync(full)
+      if(!st.isDirectory()) continue
+      const info = detectBackend(full)
+      if(!info.hasCli && !info.hasServer) continue
+      let sizeMB = 0
+      try{
+        const files = fs.readdirSync(full)
+        // rough size: sum of top-level files size
+        for(const f of files){
+          try{ const s=fs.statSync(path.join(full,f)); if(s.isFile()) sizeMB+=s.size }catch{}
+        }
+        sizeMB = Math.round(sizeMB/1024/1024)
+      }catch{}
+      const isCurrent = (()=>{ try{
+        if(!fs.existsSync(currentPath)) return false
+        // compare VERSION or file list size
+        const curFiles = fs.readdirSync(currentPath).sort().join(',')
+        const verFiles = fs.readdirSync(full).sort().join(',')
+        return curFiles===verFiles || e===path.basename(fs.readFileSync(path.join(currentPath,'VERSION'),'utf-8').trim()) || false
+      }catch{ return false }})()
+      out.push({ version:e, path:full, isCurrent, hasCli:info.hasCli, hasServer:info.hasServer, sizeMB, mtime: st.mtimeMs, files: info.files.slice(0,8) })
+    }catch{}
+  }
+  // also add current as separate entry if it exists and not matched
+  if(fs.existsSync(currentPath)){
+    const curInfo = detectBackend(currentPath)
+    if(curInfo.hasCli || curInfo.hasServer){
+      const st = fs.statSync(currentPath)
+      const already = out.some(v=> v.isCurrent)
+      if(!already){
+        out.push({ version:'current', path: currentPath, isCurrent:true, hasCli:curInfo.hasCli, hasServer:curInfo.hasServer, sizeMB:0, mtime: st.mtimeMs, files: curInfo.files.slice(0,8) })
+      }
+    }
+  }
+  return out.sort((a,b)=> b.mtime - a.mtime)
+}
+
+export function selectBackend(dataRoot:string, version:string): {backendPath:string, version:string}{
+  const root = path.join(dataRoot,'backend')
+  const src = path.join(root, version)
+  const dest = path.join(root,'current')
+  if(!fs.existsSync(src)) throw new Error('Version not found: '+version)
+  if(fs.existsSync(dest)) fs.rmSync(dest,{recursive:true,force:true})
+  fs.cpSync(src, dest, {recursive:true})
+  return {backendPath: dest, version}
+}
+
+export function deleteBackend(dataRoot:string, version:string){
+  const root = path.join(dataRoot,'backend')
+  if(version==='current') throw new Error('Cannot delete active current — select another version first or delete via version folder')
+  const p = path.join(root, version)
+  if(!fs.existsSync(p)) throw new Error('Not found: '+version)
+  // safety: only allow deleting inside backend folder
+  if(!p.startsWith(root)) throw new Error('Invalid path')
+  fs.rmSync(p,{recursive:true,force:true})
+}
+
 export function runCliHelp(backendPath:string): Promise<string> {
   return new Promise((resolve,reject)=>{
     const bin = getBackendBin(backendPath,'cli')

@@ -3,7 +3,7 @@ import * as path from 'path'
 import * as fs from 'fs'
 import * as cp from 'child_process'
 import { loadSettings, saveSettings } from './settings'
-import { detectBackend, importBackendFromZip, runCliHelp, getBackendBin, runServerHealth, fetchGithubReleases, downloadBackendFromUrl, testBackend } from './backend'
+import { detectBackend, importBackendFromZip, runCliHelp, getBackendBin, runServerHealth, fetchGithubReleases, downloadBackendFromUrl, testBackend, listBackends, selectBackend, deleteBackend } from './backend'
 import { scanInstalled, deleteModel, getModelPath, getModelsDir } from './models'
 import { startServer, stopServer, isServerRunning, getServerPid, getServerStatus } from './server'
 
@@ -81,6 +81,18 @@ ipcMain.handle('backend:health', async () => {
 ipcMain.handle('backend:test', async ()=>{
   if(!settings.backendPath) throw new Error('No backend')
   return await testBackend(settings.backendPath)
+})
+ipcMain.handle('backend:listVersions', async ()=> listBackends(settings.dataRoot))
+ipcMain.handle('backend:selectVersion', async (_e, version:string)=>{
+  const r = selectBackend(settings.dataRoot, version)
+  settings.backendPath = r.backendPath
+  settings.backendVersion = r.version
+  saveSettings(settings)
+  return { ...r, info: detectBackend(settings.backendPath) }
+})
+ipcMain.handle('backend:deleteVersion', async (_e, version:string)=>{
+  deleteBackend(settings.dataRoot, version)
+  return listBackends(settings.dataRoot)
 })
 ipcMain.handle('backend:listReleases', async ()=> {
   return await fetchGithubReleases(10)
@@ -195,6 +207,54 @@ async function ensureAutoServer(){
   }catch(e){ console.log('auto-start failed', e); return false }
 }
 
+// Helpers for voice WAV validation
+function isValidWavHeader(filePath:string): boolean{
+  try{
+    const fd = fs.openSync(filePath,'r')
+    const buf = Buffer.alloc(12)
+    const n = fs.readSync(fd, buf, 0, 12, 0)
+    fs.closeSync(fd)
+    if(n<12) return false
+    return buf.toString('ascii',0,4)==='RIFF' && buf.toString('ascii',8,12)==='WAVE'
+  }catch{ return false }
+}
+async function ensureWavVoiceFile(inputPath:string): Promise<string>{
+  if(!fs.existsSync(inputPath)) throw new Error(`Voice file not found: ${inputPath}`)
+  if(isValidWavHeader(inputPath)) return inputPath
+  const ext = path.extname(inputPath).toLowerCase()
+  const hint = `Voice file "${path.basename(inputPath)}" has invalid WAV RIFF header (found ${ext || 'no ext'}, expected .wav with RIFF/WAVE).`
+  // try ffmpeg
+  let ffmpegOk = false
+  try{
+    const r = cp.spawnSync('ffmpeg', ['-version'], {timeout:2000})
+    if(r.status===0) ffmpegOk=true
+  }catch{}
+  if(!ffmpegOk){
+    try{
+      const which = process.platform==='win32' ? 'where' : 'which'
+      const r = cp.spawnSync(which, ['ffmpeg'], {timeout:2000})
+      if(r.status===0) ffmpegOk=true
+    }catch{}
+  }
+  if(!ffmpegOk){
+    throw new Error(`${hint}\naudio.cpp requires a valid WAV (PCM 16-bit, e.g. 16kHz mono).\n\nFix:\n• Convert with ffmpeg: ffmpeg -i "${inputPath}" -ar 16000 -ac 1 -c:a pcm_s16le "${inputPath}.converted.wav"\n• Or Audacity: Import → Export as WAV (16-bit PCM, 16000 Hz, Mono)\n• Or pick a .wav file.\n\nNo ffmpeg found on PATH — install ffmpeg (https://ffmpeg.org) or convert manually.`)
+  }
+  const tmpOut = path.join(require('os').tmpdir(), `voice_${Date.now()}_16k.wav`)
+  await new Promise<void>((resolve, reject)=>{
+    const p = cp.spawn('ffmpeg', ['-y','-i', inputPath, '-ar','16000','-ac','1','-c:a','pcm_s16le', tmpOut], {stdio:['ignore','pipe','pipe']})
+    let err=''
+    p.stderr?.on('data', d=> err+=d.toString())
+    const to = setTimeout(()=> { try{p.kill()}catch{}; reject(new Error('ffmpeg timeout')) }, 20000)
+    p.on('close', code=>{
+      clearTimeout(to)
+      if(code===0 && fs.existsSync(tmpOut) && isValidWavHeader(tmpOut)) resolve()
+      else reject(new Error(`ffmpeg failed (code ${code}): ${err.slice(0,800)}`))
+    })
+    p.on('error', e=>{ clearTimeout(to); reject(e) })
+  })
+  return tmpOut
+}
+
 // Generation via CLI (fallback) — spawns audiocpp_cli
 async function runCli(args:string[], timeout=120000): Promise<{out:string, err:string, code:number|null}>{
   const bin = settings.backendPath ? getBackendBin(settings.backendPath,'cli') : null
@@ -240,12 +300,22 @@ ipcMain.handle('gen:tts', async (_e, opts:any) => {
     fs.writeFileSync(outFile+'.txt', `DEMO TTS output for "${opts.text.slice(0,60)}" model=${opts.modelId}`)
     return { outFile: outFile+'.txt', via:'demo (no backend)', note:'Install backend to generate real audio' }
   }
+  let voiceRefToUse = opts.voiceRef as string | undefined
+  if (voiceRefToUse){
+    try{ voiceRefToUse = await ensureWavVoiceFile(voiceRefToUse) }catch(e:any){ throw new Error(e.message) }
+  }
   const args = ['--task','tts','--family', opts.family||opts.modelId, '--model', modelPath, '--text', opts.text, '--out', outFile]
-  if (opts.voiceRef) args.push('--voice-ref', opts.voiceRef)
+  if (voiceRefToUse) args.push('--voice-ref', voiceRefToUse)
   if (opts.voiceId) args.push('--voice-id', opts.voiceId)
   if (opts.language) args.push('--load-option', `language=${opts.language}`)
   const r = await runCli(args)
-  if (!fs.existsSync(outFile)) throw new Error('CLI failed: '+r.err.slice(0,500))
+  if (!fs.existsSync(outFile)){
+    const errLower = (r.err + r.out).toLowerCase()
+    if(errLower.includes('invalid wav') || errLower.includes('riff') || errLower.includes('wav riff')){
+      throw new Error(`CLI failed — invalid WAV RIFF header for voice file "${opts.voiceRef}".\n${r.err.slice(0,700)}\n\nFix: convert your voice sample to a valid WAV (PCM 16-bit, 16kHz, mono). Example: ffmpeg -i "${opts.voiceRef}" -ar 16000 -ac 1 -c:a pcm_s16le voice_16k.wav\nOr use a proper .wav file. If ffmpeg is installed, the app will auto-convert next time.`)
+    }
+    throw new Error('CLI failed: '+(r.err||r.out).slice(0,700))
+  }
   return { outFile, via:'cli', log:r.err.slice(0,800) }
 })
 
