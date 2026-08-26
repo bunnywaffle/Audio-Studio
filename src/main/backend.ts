@@ -105,7 +105,7 @@ export interface BackendVersion {
   files: string[]
 }
 
-export function listBackends(dataRoot:string): BackendVersion[]{
+export function listBackends(dataRoot:string, currentVersion?: string|null): BackendVersion[]{
   const root = path.join(dataRoot,'backend')
   if(!fs.existsSync(root)) return []
   const entries = fs.readdirSync(root)
@@ -135,12 +135,11 @@ export function listBackends(dataRoot:string): BackendVersion[]{
         }
         sizeMB = Math.round(sizeMB/1024/1024)
       }catch{}
-      const isCurrent = (()=>{ try{
+      const isCurrent = currentVersion ? e===currentVersion : (()=>{ try{
         if(!fs.existsSync(currentPath)) return false
-        // compare VERSION or file list size
         const curFiles = fs.readdirSync(currentPath).sort().join(',')
         const verFiles = fs.readdirSync(full).sort().join(',')
-        return curFiles===verFiles || e===path.basename(fs.readFileSync(path.join(currentPath,'VERSION'),'utf-8').trim()) || false
+        return curFiles===verFiles
       }catch{ return false }})()
       out.push({ version:e, path:full, isCurrent, hasCli:info.hasCli, hasServer:info.hasServer, sizeMB, mtime: st.mtimeMs, files: info.files.slice(0,8) })
     }catch{}

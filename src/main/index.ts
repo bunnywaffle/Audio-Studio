@@ -82,8 +82,10 @@ ipcMain.handle('backend:test', async ()=>{
   if(!settings.backendPath) throw new Error('No backend')
   return await testBackend(settings.backendPath)
 })
-ipcMain.handle('backend:listVersions', async ()=> listBackends(settings.dataRoot))
+ipcMain.handle('backend:listVersions', async ()=> listBackends(settings.dataRoot, settings.backendVersion))
 ipcMain.handle('backend:selectVersion', async (_e, version:string)=>{
+  // stop server before switching (files may be locked)
+  if(isServerRunning()){ try{ await stopServer() }catch{} }
   const r = selectBackend(settings.dataRoot, version)
   settings.backendPath = r.backendPath
   settings.backendVersion = r.version
@@ -91,8 +93,11 @@ ipcMain.handle('backend:selectVersion', async (_e, version:string)=>{
   return { ...r, info: detectBackend(settings.backendPath) }
 })
 ipcMain.handle('backend:deleteVersion', async (_e, version:string)=>{
+  if(settings.backendVersion===version){
+    throw new Error('Cannot delete active backend — select another version first')
+  }
   deleteBackend(settings.dataRoot, version)
-  return listBackends(settings.dataRoot)
+  return listBackends(settings.dataRoot, settings.backendVersion)
 })
 ipcMain.handle('backend:listReleases', async ()=> {
   return await fetchGithubReleases(10)
@@ -301,8 +306,19 @@ ipcMain.handle('gen:tts', async (_e, opts:any) => {
     return { outFile: outFile+'.txt', via:'demo (no backend)', note:'Install backend to generate real audio' }
   }
   let voiceRefToUse = opts.voiceRef as string | undefined
+  let voiceWarning: string | null = null
   if (voiceRefToUse){
-    try{ voiceRefToUse = await ensureWavVoiceFile(voiceRefToUse) }catch(e:any){ throw new Error(e.message) }
+    try{ voiceRefToUse = await ensureWavVoiceFile(voiceRefToUse) }
+    catch(e:any){
+      const msg = e.message || String(e)
+      if(msg.includes('invalid WAV') || msg.includes('RIFF') || msg.includes('WAV RIFF')){
+        voiceWarning = msg
+        // fallback: try without voice clone (use built-in voice)
+        voiceRefToUse = undefined
+      } else {
+        throw new Error(msg)
+      }
+    }
   }
   const args = ['--task','tts','--family', opts.family||opts.modelId, '--model', modelPath, '--text', opts.text, '--out', outFile]
   if (voiceRefToUse) args.push('--voice-ref', voiceRefToUse)
@@ -312,11 +328,15 @@ ipcMain.handle('gen:tts', async (_e, opts:any) => {
   if (!fs.existsSync(outFile)){
     const errLower = (r.err + r.out).toLowerCase()
     if(errLower.includes('invalid wav') || errLower.includes('riff') || errLower.includes('wav riff')){
-      throw new Error(`CLI failed — invalid WAV RIFF header for voice file "${opts.voiceRef}".\n${r.err.slice(0,700)}\n\nFix: convert your voice sample to a valid WAV (PCM 16-bit, 16kHz, mono). Example: ffmpeg -i "${opts.voiceRef}" -ar 16000 -ac 1 -c:a pcm_s16le voice_16k.wav\nOr use a proper .wav file. If ffmpeg is installed, the app will auto-convert next time.`)
+      const base = `CLI failed — invalid WAV RIFF header for voice file "${opts.voiceRef}".\n${(r.err||r.out).slice(0,700)}`
+      if(voiceWarning) throw new Error(base + `\n\nAlso: ${voiceWarning}\n\nFix: convert to WAV 16k mono: ffmpeg -i "${opts.voiceRef}" -ar 16000 -ac 1 -c:a pcm_s16le voice_16k.wav`)
+      throw new Error(base + `\n\nFix: convert your voice sample to WAV (PCM 16-bit, 16kHz, mono).`)
     }
     throw new Error('CLI failed: '+(r.err||r.out).slice(0,700))
   }
-  return { outFile, via:'cli', log:r.err.slice(0,800) }
+  const ret:any = { outFile, via:'cli', log:r.err.slice(0,800) }
+  if(voiceWarning) ret.voiceWarning = voiceWarning + '\nGenerated without clone (used built-in voice). Convert file to WAV to use clone.'
+  return ret
 })
 
 ipcMain.handle('gen:music', async (_e, opts:any)=>{

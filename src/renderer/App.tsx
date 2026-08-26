@@ -107,7 +107,8 @@ function ModelPicker({models, value, onChange, placeholder="Choose model"}:{mode
 
 function TTS(){
   const {models}=useModels()
-  const ttsModels=models.filter((m:any)=> m.task==='tts')
+  const ttsModels=models.filter((m:any)=> m.task==='tts' && m.installed)
+  const hasAnyInstalled = ttsModels.length>0
   const [modelId,setModelId]=useState('')
   const [text,setText]=useState('Hello! audio.cpp Studio is running locally — no Python needed. Try cloning a voice!')
   const [voiceId,setVoiceId]=useState('')
@@ -132,9 +133,9 @@ function TTS(){
       <div className="grid2" style={{alignItems:'start'}}>
         <div className="card">
           <h3><span className="dot"/> Script</h3>
-          <label className="small" style={{fontWeight:700}}>Model — sleek picker</label>
-          <ModelPicker models={ttsModels} value={modelId} onChange={setModelId} placeholder="Choose a TTS model" />
-          <div className="small" style={{marginTop:6}}>{ttsModels.filter((m:any)=>m.installed).length} installed • open <b>Models</b> to add more</div>
+          <label className="small" style={{fontWeight:700}}>Model — installed only</label>
+          {hasAnyInstalled ? <ModelPicker models={ttsModels} value={modelId} onChange={setModelId} placeholder="Choose an installed TTS model" /> : <div style={{padding:'12px', background:'rgba(250,204,21,.08)', border:'1px solid rgba(250,204,21,.2)', borderRadius:8, fontSize:12}}>No TTS models installed — go to <b>Models</b> tab and download one (e.g. PocketTTS, Qwen3-TTS). All HF models are available there.</div>}
+          <div className="small" style={{marginTop:6}}>{ttsModels.length} installed • filtered to installed only</div>
 
           <div style={{marginTop:12}} className="grid2">
             <div><label className="small" style={{fontWeight:700}}>Language</label><select className="select" value={language} onChange={e=> setLanguage(e.target.value)}><option value="en">English</option><option value="es">Spanish</option><option value="zh">中文</option><option value="ja">日本語</option><option value="de">Deutsch</option><option value="fr">Français</option></select></div>
@@ -209,7 +210,8 @@ function TTS(){
 
 function Music(){
   const {models}=useModels()
-  const musicModels=models.filter((m:any)=> m.task==='music')
+  const musicModels=models.filter((m:any)=> m.task==='music' && m.installed)
+  const hasAnyMusic = musicModels.length>0
   const [modelId,setModelId]=useState('')
   const [prompt,setPrompt]=useState('lofi hip hop, warm Rhodes, gentle drums, cozy night')
   const [lyrics,setLyrics]=useState('')
@@ -222,8 +224,8 @@ function Music(){
       <div className="hero"><h2>Music</h2><p>Text to song — describe a vibe, get a track.</p></div>
       <div className="card">
         <h3><span className="dot"/> Compose</h3>
-        <label className="small" style={{fontWeight:700}}>Model</label>
-        <ModelPicker models={musicModels} value={modelId} onChange={setModelId} placeholder="Choose music model" />
+        <label className="small" style={{fontWeight:700}}>Model — installed only</label>
+        {hasAnyMusic ? <ModelPicker models={musicModels} value={modelId} onChange={setModelId} placeholder="Choose an installed music model" /> : <div style={{padding:'12px', background:'rgba(250,204,21,.08)', border:'1px solid rgba(250,204,21,.2)', borderRadius:8, fontSize:12}}>No music models installed — download one in <b>Models</b> (ACE-Step, Stable Audio).</div>}
         <div style={{marginTop:10}}><label className="small" style={{fontWeight:700}}>Duration</label><select className="select" value={duration} onChange={e=> setDuration(e.target.value)}><option value="15">15s</option><option value="30">30s</option><option value="60">60s</option><option value="120">120s</option></select></div>
         <div style={{marginTop:12}}><label className="small" style={{fontWeight:700}}>Prompt</label><textarea className="textarea" style={{minHeight:80}} value={prompt} onChange={e=> setPrompt(e.target.value)} /></div>
         <div style={{marginTop:12}}><label className="small" style={{fontWeight:700}}>Lyrics <span style={{fontWeight:400}}>(optional)</span></label><textarea className="textarea" style={{minHeight:80}} value={lyrics} onChange={e=> setLyrics(e.target.value)} placeholder="Verse / chorus..." /></div>
@@ -240,7 +242,8 @@ function Music(){
 
 function ASR(){
   const {models}=useModels()
-  const asrModels=models.filter((m:any)=> m.task==='asr')
+  const asrModels=models.filter((m:any)=> m.task==='asr' && m.installed)
+  const hasAnyAsr = asrModels.length>0
   const [modelId,setModelId]=useState('')
   const [audioPath,setAudioPath]=useState('')
   const [drag,setDrag]=useState(false)
@@ -252,8 +255,8 @@ function ASR(){
       <div className="hero"><h2>Speech → Text</h2><p>Long meetings, podcasts — VAD chunking handles hours.</p></div>
       <div className="card">
         <h3><span className="dot" style={{background:'#22C55E'}}/> Transcribe</h3>
-        <label className="small" style={{fontWeight:700}}>Model</label>
-        <ModelPicker models={asrModels} value={modelId} onChange={setModelId} placeholder="Choose ASR model" />
+        <label className="small" style={{fontWeight:700}}>Model — installed only</label>
+        {hasAnyAsr ? <ModelPicker models={asrModels} value={modelId} onChange={setModelId} placeholder="Choose an installed ASR model" /> : <div style={{padding:'12px', background:'rgba(250,204,21,.08)', border:'1px solid rgba(250,204,21,.2)', borderRadius:8, fontSize:12}}>No ASR models installed — download one in <b>Models</b> (Qwen3-ASR, Parakeet).</div>}
         <div style={{marginTop:12}} className={`audio-drop ${drag?'drag':''}`} onDragOver={e=>{e.preventDefault(); setDrag(true)}} onDragLeave={()=> setDrag(false)} onDrop={async e=>{
           e.preventDefault(); setDrag(false); const f=(e.dataTransfer.files[0] as any)?.path; if(f) setAudioPath(f)
         }} onClick={async()=>{
