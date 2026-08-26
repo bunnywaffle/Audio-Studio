@@ -55,12 +55,27 @@ export function getModelPath(dataRoot:string, id:string){ return path.join(getMo
 export function scanInstalled(dataRoot:string): ModelEntry[] {
   const dir = getModelsDir(dataRoot)
   if (!fs.existsSync(dir)) return CURATED_MODELS.map(m=>({...m, installed:false}))
-  const installedIds = new Set(fs.readdirSync(dir))
-  return CURATED_MODELS.map(m=>{
+  const entries = fs.readdirSync(dir)
+  const installedIds = new Set(entries)
+  const base = CURATED_MODELS.map(m=>{
     const p = getModelPath(dataRoot, m.id)
     const installed = installedIds.has(m.id) && fs.existsSync(p) && fs.readdirSync(p).length>0
     return {...m, installed, localPath: installed ? p : undefined}
   })
+  // include custom imported folders not in curated
+  const curatedIds = new Set(CURATED_MODELS.map(m=> m.id))
+  for(const e of entries){
+    if(curatedIds.has(e)) continue
+    const p = path.join(dir, e)
+    try{
+      const st = fs.statSync(p)
+      if(!st.isDirectory()) continue
+      const files = fs.readdirSync(p)
+      if(files.length===0) continue
+      base.push({ id:e, family:e, label:e.replace(/[_-]+/g,' '), task:'other', description:'Locally imported GGUF', language:'auto', size:'?', runtime:'GGUF', installed:true, localPath:p })
+    }catch{}
+  }
+  return base
 }
 
 export function deleteModel(dataRoot:string, id:string){
@@ -122,29 +137,19 @@ export function fetchHfFolderFiles(folder:string): Promise<Array<{path:string, s
   return collect(folder)
 }
 
-export async function resolveHfDownloadUrl(modelId:string): Promise<{url:string, fileName:string, size?:number}>{
+export async function resolveHfDownloadUrl(modelId:string): Promise<{url:string, fileName:string, size?:number, relPath?:string}>{
   const entry = CURATED_MODELS.find(m=> m.id===modelId)
   if(entry && entry.hfFile){
     const p = entry.hfFile.startsWith(entry.hfFolder||'') ? entry.hfFile : `${entry.hfFolder}/${entry.hfFile}`
-    return {url:`${HF_BASE}/${p}`, fileName: path.basename(p)}
+    return {url:`${HF_BASE}/${p}`, fileName: path.basename(p), relPath: entry.hfFile}
   }
-  if(entry && entry.hfFolder){
-    const files = await fetchHfFolderFiles(entry.hfFolder)
-    if(files.length===0) throw new Error(`No .gguf found in ${entry.hfFolder} — browse https://huggingface.co/${HF_REPO}/tree/main/${entry.hfFolder}`)
-    const q8 = files.find(f=> /q8/i.test(f.path))
-    const chosen = q8 || files.sort((a,b)=> a.size-b.size)[0]
-    return {url:`${HF_BASE}/${chosen.path}`, fileName: path.basename(chosen.path), size: chosen.size}
-  }
-  // Fallback: treat modelId as raw HF folder name (for dynamic HF models)
-  if(!entry){
-    const folder = modelId // id is folder name like PocketTTS-GGUF
-    const files = await fetchHfFolderFiles(folder)
-    if(files.length===0) throw new Error(`No .gguf in ${folder}`)
-    const q8 = files.find(f=> /q8/i.test(f.path))
-    const chosen = q8 || files.sort((a,b)=> a.size-b.size)[0]
-    return {url:`${HF_BASE}/${chosen.path}`, fileName: path.basename(chosen.path), size: chosen.size}
-  }
-  throw new Error(`Model ${modelId} has no HF mapping — check https://huggingface.co/${HF_REPO}/tree/main`)
+  // keyword-scored best match (turbo vs base, 1.7b vs 0.6b, music vs sfx...)
+  const variants = await getModelVariants(modelId)
+  if(variants.length===0) throw new Error(`No .gguf found for ${modelId} — browse https://huggingface.co/${HF_REPO}/tree/main`)
+  const best = variants[0] // already sorted by score desc
+  const folderPrefix = (entry?.hfFolder || modelId) + '/'
+  const relPath = best.path.startsWith(folderPrefix) ? best.path.slice(folderPrefix.length) : best.fileName
+  return {url: best.url, fileName: best.fileName, size: best.size, relPath}
 }
 
 export function fetchAllHfFolders(): Promise<Array<{folder:string}>>{
@@ -165,13 +170,23 @@ export function fetchAllHfFolders(): Promise<Array<{folder:string}>>{
   })
 }
 
-export async function getModelVariants(modelId:string): Promise<Array<{fileName:string, url:string, size:number, precision:string, path:string}>>{
+// Score a variant file against model id/label — prefers matching variant keywords (turbo/base/1.7b/...)
+export function scoreVariant(modelId:string, label:string, filePath:string): number{
+  const p = filePath.toLowerCase()
+  const tokens = `${modelId} ${label}`.toLowerCase().replace(/[^a-z0-9.]+/g,' ').split(/\s+/).filter(t=> t.length>1 && !['tts','asr','gguf','the','and','pro','small','v3','1.5'].includes(t))
+  let score = 0
+  for(const t of tokens){ if(p.includes(t)) score += 20 }
+  if(/q8/i.test(p)) score += 5
+  else if(/q6|q5|q4/i.test(p)) score += 3
+  else if(/bf16|f16|orig/i.test(p)) score += 1
+  return score
+}
+
+export async function getModelVariants(modelId:string): Promise<Array<{fileName:string, url:string, size:number, precision:string, path:string, recommended:boolean}>>{
   const entry = CURATED_MODELS.find(m=> m.id===modelId)
   const folder = entry?.hfFolder || modelId
-  // try to handle sanitized ids for dynamic models: if entry not found and folder looks sanitized, try to find original
   let targetFolder = folder
   if(!entry){
-    // try to find matching HF folder by sanitized id
     try{
       const all = await fetchAllHfFolders()
       const sanitized = (s:string)=> s.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'')
@@ -180,12 +195,17 @@ export async function getModelVariants(modelId:string): Promise<Array<{fileName:
     }catch{}
   }
   const files = await fetchHfFolderFiles(targetFolder)
-  return files.map(f=>{
+  const label = entry?.label || modelId
+  const variants = files.map(f=>{
     const fileName = path.basename(f.path)
     const m = fileName.match(/(q8_0|q4_k|q5_k|q6_k|q8|q4|q2_k|q3_k|bf16|f16|f32|orig|int8)/i)
     let precision = m ? m[0].toLowerCase() : 'gguf'
-    // also include full precision like q8_0
-    if(/q8/i.test(fileName) && !precision.includes('q8')) precision = 'q8'
-    return {fileName, url: `${HF_BASE}/${f.path}`, size: f.size, precision, path: f.path}
-  }).sort((a,b)=> a.size - b.size)
+    return {fileName, url: `${HF_BASE}/${f.path}`, size: f.size, precision, path: f.path, recommended:false, score: scoreVariant(modelId, label, f.path)}
+  })
+  // mark recommended = highest score, tie-break smallest
+  if(variants.length>0){
+    const best = variants.reduce((a,b)=> b.score>a.score ? b : (b.score===a.score && b.size<a.size ? b : a))
+    best.recommended = true
+  }
+  return variants.sort((a,b)=> b.score - a.score || a.size - b.size).map(({score, ...rest}:any)=> rest)
 }

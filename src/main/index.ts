@@ -171,18 +171,51 @@ ipcMain.handle('models:delete', async (_e, id:string) => {
   deleteModel(settings.dataRoot, id)
   return scanInstalled(settings.dataRoot)
 })
+ipcMain.handle('models:import', async (_e, id:string, sourcePath:string)=>{
+  if(!sourcePath || !fs.existsSync(sourcePath)) throw new Error('Source not found: '+sourcePath)
+  const destDir = getModelPath(settings.dataRoot, id)
+  fs.mkdirSync(destDir,{recursive:true})
+  const stat = fs.statSync(sourcePath)
+  const validateGguf = (p:string)=>{
+    const fd = fs.openSync(p,'r')
+    const buf = Buffer.alloc(4)
+    const n = fs.readSync(fd, buf, 0, 4, 0)
+    fs.closeSync(fd)
+    if(n<4 || buf.toString('ascii')!=='GGUF') throw new Error(path.basename(p)+' is not a valid GGUF (bad header)')
+  }
+  if(stat.isDirectory()){
+    const files = fs.readdirSync(sourcePath).filter(f=> f.toLowerCase().endsWith('.gguf'))
+    if(files.length===0) throw new Error('No .gguf found in folder')
+    for(const f of files){
+      const src = path.join(sourcePath,f)
+      validateGguf(src)
+      fs.copyFileSync(src, path.join(destDir,f))
+    }
+  } else {
+    validateGguf(sourcePath)
+    fs.copyFileSync(sourcePath, path.join(destDir, path.basename(sourcePath)))
+  }
+  return scanInstalled(settings.dataRoot)
+})
 ipcMain.handle('models:download', async (e, id:string, url?:string) => {
   const dir = getModelPath(settings.dataRoot, id)
   fs.mkdirSync(dir,{recursive:true})
-  const doDownload = async (dlUrl:string)=>{
+  const doDownload = async (dlUrl:string, relPath?:string)=>{
     const { downloadFile } = await import('./models')
-    const dest = path.join(dir, path.basename(new URL(dlUrl).pathname) || 'model.gguf')
+    let dest: string
+    if(relPath){
+      // preserve HF folder structure (e.g. turbo/ace-step-1.5-turbo-q8_0.gguf)
+      dest = path.join(dir, relPath)
+      fs.mkdirSync(path.dirname(dest),{recursive:true})
+    } else {
+      dest = path.join(dir, path.basename(new URL(dlUrl).pathname) || 'model.gguf')
+    }
+    const fileName = path.basename(dest)
     let last = -1
     const onProg = (pct:number, dl:number, total:number) => {
-      if (pct!==last){ last=pct; e.sender.send('models:downloadProgress', { id, pct, dl, total, file: dest }) }
+      if (pct!==last){ last=pct; e.sender.send('models:downloadProgress', { id, pct, dl, total, file: dest, note:`${fileName} ${pct}%` }) }
     }
-    // also send 0 immediately
-    e.sender.send('models:downloadProgress', { id, pct:0 })
+    e.sender.send('models:downloadProgress', { id, pct:0, note:`${fileName} 0%` })
     try{
       await downloadFile(dlUrl, dest, onProg)
       e.sender.send('models:downloadProgress', { id, pct:100, done:true, file:dest })
@@ -195,18 +228,55 @@ ipcMain.handle('models:download', async (e, id:string, url?:string) => {
   if (url) {
     return await doDownload(url)
   }
-  // No URL: resolve via HF repo
+  // No URL: resolve via HF repo (keyword-scored: turbo/base/size matching)
   try{
     const { resolveHfDownloadUrl } = await import('./models')
-    e.sender.send('models:downloadProgress', { id, pct:0, note:'Resolving HF file…' })
+    e.sender.send('models:downloadProgress', { id, pct:0, note:'Resolving best variant…' })
     const resolved = await resolveHfDownloadUrl(id)
-    // inform UI which file is chosen
-    e.sender.send('models:downloadProgress', { id, pct:1, note:`Downloading ${resolved.fileName}…` })
-    return await doDownload(resolved.url)
+    e.sender.send('models:downloadProgress', { id, pct:1, note:`Best match: ${resolved.fileName} (${((resolved.size||0)/1024/1024/1024).toFixed(2)} GB)` })
+    return await doDownload(resolved.url, resolved.relPath)
   }catch(err:any){
     e.sender.send('models:downloadProgress', { id, error: err.message })
     throw err
   }
+})
+
+ipcMain.handle('models:downloadAll', async (e, id:string) => {
+  const dir = getModelPath(settings.dataRoot, id)
+  fs.mkdirSync(dir,{recursive:true})
+  const { downloadFile, fetchHfFolderFiles, CURATED_MODELS, HF_BASE } = await import('./models')
+  const entry = CURATED_MODELS.find(m=> m.id===id)
+  let folder = entry?.hfFolder || id
+  if(!entry){
+    try{
+      const { fetchAllHfFolders } = await import('./models')
+      const all = await fetchAllHfFolders()
+      const sanitized = (s:string)=> s.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'')
+      const found = all.find(f=> sanitized(f.folder)===id)
+      if(found) folder = found.folder
+    }catch{}
+  }
+  const files = await fetchHfFolderFiles(folder)
+  if(files.length===0) throw new Error('No .gguf in '+folder)
+  let i=0
+  try{
+    for(const f of files){
+      i++
+      const rel = f.path.startsWith(folder+'/') ? f.path.slice(folder.length+1) : path.basename(f.path)
+      const dest = path.join(dir, rel)
+      fs.mkdirSync(path.dirname(dest),{recursive:true})
+      const label = `[${i}/${files.length}] ${path.basename(f.path)}`
+      e.sender.send('models:downloadProgress', { id, pct:0, note:label })
+      await downloadFile(`${HF_BASE}/${f.path}`, dest, (pct)=>{
+        e.sender.send('models:downloadProgress', { id, pct, note:`${label} ${pct}%` })
+      })
+    }
+  }catch(err:any){
+    e.sender.send('models:downloadProgress', { id, error: err.message })
+    throw err
+  }
+  e.sender.send('models:downloadProgress', { id, pct:100, done:true, note:`All ${files.length} files downloaded` })
+  return scanInstalled(settings.dataRoot)
 })
 
 ipcMain.handle('server:start', async (_e, models:any[]) => {

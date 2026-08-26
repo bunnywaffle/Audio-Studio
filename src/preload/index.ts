@@ -29,6 +29,8 @@ contextBridge.exposeInMainWorld('api', {
   getModelVariants: (id:string) => ipcRenderer.invoke('models:getVariants', id),
   deleteModel: (id:string) => ipcRenderer.invoke('models:delete', id),
   downloadModel: (id:string, url?:string) => ipcRenderer.invoke('models:download', id, url),
+  importModel: (id:string, sourcePath:string) => ipcRenderer.invoke('models:import', id, sourcePath),
+  downloadAllModel: (id:string) => ipcRenderer.invoke('models:downloadAll', id),
   onDownloadProgress: (cb:(data:any)=>void) => {
     const handler = (_:any, data:any)=> cb(data)
     ipcRenderer.on('models:downloadProgress', handler)

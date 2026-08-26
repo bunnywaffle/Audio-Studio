@@ -300,7 +300,7 @@ function Models(){
       setModels(all)
     }catch{ setModels(await window.api.listModels()) }
   }
-  useEffect(()=>{ refresh(); const off=window.api.onDownloadProgress((d:any)=>{ setDownloading(prev=> ({...prev, [d.id]: d.pct})); if(d.done || d.error) setTimeout(refresh,400)}); return ()=> off && off() },[])
+  useEffect(()=>{ refresh(); const off=window.api.onDownloadProgress((d:any)=>{ setDownloading(prev=> ({...prev, [d.id]: d.pct, [d.id+'_note']: d.note||''})); if(d.done || d.error) setTimeout(refresh,400)}); return ()=> off && off() },[])
   const filtered=models.filter((m:any)=>{
     if(filter!=='all' && !m.task.includes(filter as any) && !(filter==='other' && !['tts','music','asr'].includes(m.task))) return false
     if(query && !`${m.label} ${m.family} ${m.description}`.toLowerCase().includes(query.toLowerCase())) return false
@@ -320,7 +320,21 @@ function Models(){
   return (
     <div style={{display:'grid', gap:14}}>
       <div className="card">
-        <div className="row" style={{justifyContent:'space-between'}}><h3 style={{margin:0}}><span className="dot"/> Models — {models.filter((m:any)=> m.installed).length} / {models.length}</h3><div className="row"><button className="btn ghost" onClick={()=> require('electron').shell.openExternal('https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main')}>Browse HF repo ↗</button><button className="btn" onClick={refresh}>↻ Refresh</button></div></div>
+        <div className="row" style={{justifyContent:'space-between'}}><h3 style={{margin:0}}><span className="dot"/> Models — {models.filter((m:any)=> m.installed).length} / {models.length}</h3><div className="row"><button className="btn ghost" onClick={async()=>{
+                    const f=await window.api.chooseFile([{name:'GGUF', extensions:['gguf']}])
+                    if(f){
+                      const suggested = f.split(/\\|\//).pop()?.replace(/\.gguf$/i,'').toLowerCase().replace(/[^a-z0-9]+/g,'_') || 'custom_model'
+                      const id = prompt('Import as model ID (folder name):', suggested)
+                      if(id){ try{ await window.api.importModel(id.trim(), f); refresh(); alert(`Imported ${f} → models/${id}`)}catch(e:any){ alert(e.message)}}
+                    }
+                  }}>Import GGUF</button><button className="btn ghost" onClick={async()=>{
+                    const d=await window.api.chooseFolder()
+                    if(d){
+                      const suggested = d.split(/\\|\//).pop()?.toLowerCase().replace(/[^a-z0-9]+/g,'_') || 'custom_model'
+                      const id = prompt('Import folder as model ID:', suggested)
+                      if(id){ try{ await window.api.importModel(id.trim(), d); refresh(); alert(`Imported folder ${d} → models/${id}`)}catch(e:any){ alert(e.message)}}
+                    }
+                  }}>Import Folder</button><button className="btn ghost" onClick={()=> require('electron').shell.openExternal('https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main')}>Browse HF ↗</button><button className="btn" onClick={refresh}>↻ Refresh</button></div></div>
         <div className="row" style={{marginTop:10}}>
           <input className="input" placeholder="Search…" value={query} onChange={e=> setQuery(e.target.value)} style={{maxWidth:320}}/>
           <div className="row">{(['all','tts','music','asr','other'] as const).map(f=>(
@@ -342,12 +356,20 @@ function Models(){
               {isDl && <div className="progress"><i style={{width:`${pct}%`}}></i></div>}
               {isDl && <div className="small mono">{pct}% {downloading[m.id+'_note']||''}</div>}
               <div className="row" style={{marginTop:6, flexWrap:'wrap'}}>
-                {m.installed ? <><span className="badge-installed">● Installed</span><button className="btn ghost" onClick={async()=>{ await window.api.deleteModel(m.id); refresh()}}>Remove</button><button className="btn" onClick={()=> window.api.openFolder(m.localPath)}>Open</button></> : <>
-                  <button className="btn" disabled={loadingV[m.id]} onClick={()=> loadVariants(m.id)}>{loadingV[m.id]?'Loading…': isExpanded ? 'Hide versions' : 'Versions'}</button>
-                  <button className="btn primary" disabled={isDl} onClick={async()=>{ setDownloading(p=> ({...p,[m.id]:0})); try{ await window.api.downloadModel(m.id)}catch(e:any){ alert(e.message); setDownloading(p=>{const n={...p}; delete n[m.id]; return n})}}}>⬇ Quick Q8</button>
+                {m.installed ? <><span className="badge-installed">● Installed</span><button className="btn ghost" onClick={async()=>{ await window.api.deleteModel(m.id); refresh()}}>Remove</button><button className="btn" onClick={()=> window.api.openFolder(m.localPath)}>Open</button><button className="btn ghost" onClick={async()=>{
+                    const f=await window.api.chooseFile([{name:'GGUF', extensions:['gguf']}])
+                    if(f){ try{ await window.api.importModel(m.id, f); refresh(); alert(`Re-imported → ${m.id}`)}catch(e:any){ alert(e.message)}}
+                  }}>Import</button></> : <>
+                  <button className="btn" disabled={loadingV[m.id]} onClick={()=> loadVariants(m.id)}>{loadingV[m.id]?'Loading…': isExpanded ? 'Hide' : 'Versions'}</button>
+                  <button className="btn primary" disabled={isDl} onClick={async()=>{ setDownloading(p=> ({...p,[m.id]:0})); try{ await window.api.downloadModel(m.id)}catch(e:any){ alert(e.message); setDownloading(p=>{const n={...p}; delete n[m.id]; return n})}}}>⬇ Best match</button>
+                  <button className="btn" disabled={isDl} onClick={async()=>{ setDownloading(p=> ({...p,[m.id]:0})); try{ await window.api.downloadAllModel(m.id)}catch(e:any){ alert(e.message); setDownloading(p=>{const n={...p}; delete n[m.id]; return n})}}}>⬇ All files</button>
                   <button className="btn" onClick={async()=>{
                     const url=prompt('Direct GGUF/HF URL for '+m.id); if(url){ setDownloading(p=> ({...p,[m.id]:0})); await window.api.downloadModel(m.id, url)}
-                  }}>From URL</button>
+                  }}>URL</button>
+                  <button className="btn" onClick={async()=>{
+                    const f=await window.api.chooseFile([{name:'GGUF', extensions:['gguf']}])
+                    if(f){ try{ await window.api.importModel(m.id, f); refresh(); alert(`Imported → ${m.id}`)}catch(e:any){ alert(e.message)}}
+                  }}>Import</button>
                 </>}
                 {m.hfFolder && <button className="btn ghost" onClick={()=> require('electron').shell.openExternal(`https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main/${m.hfFolder}`)}>HF ↗</button>}
               </div>
