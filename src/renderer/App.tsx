@@ -449,6 +449,12 @@ function Music(){
   },[models])
 
   useEffect(()=>{
+    if(modelId && (modelId.toLowerCase().includes('turbo') || selectedModel?.primaryGguf?.toLowerCase().includes('turbo'))){
+      setSteps('8')
+    }
+  },[modelId])
+
+  useEffect(()=>{
     const off = window.api.onGenProgress?.((d:any)=>{
       if(d && d.text){
         setLiveLog(prev => (prev + d.text).slice(-2000))

@@ -621,24 +621,38 @@ ipcMain.handle('gen:music', async (_e, opts:any)=>{
   }
 
   const backendAcc = getBackendAcceleration()
-  const args = ['--task', task, '--family', family, '--model', modelPath, '--text', opts.prompt, '--out', outFile]
+  const args = [
+    '--task', task,
+    '--family', family,
+    '--model', modelPath,
+    '--text', opts.prompt,
+    '--out', outFile,
+    '--task-route', 'text2music',
+    '--metrics',
+    '--log'
+  ]
   if (backendAcc && backendAcc !== 'cpu') {
     args.push('--backend', backendAcc)
   }
+
+  // Set explicit duration so engine does not default to 600s / 10-minute generation
+  const durationSec = opts.duration ? String(opts.duration) : '30'
+  args.push('--duration-seconds', durationSec)
+  args.push('--request-option', `duration=${durationSec}`)
+  args.push('--request-option', `duration_seconds=${durationSec}`)
+
+  // Default steps: Turbo models (ACE-Step Turbo) only need 8-12 steps; standard models use 25
+  const isTurbo = opts.modelId.toLowerCase().includes('turbo') || modelPath.toLowerCase().includes('turbo')
+  const defaultSteps = isTurbo ? '8' : '25'
+  const stepsToUse = opts.steps ? String(opts.steps) : defaultSteps
+  args.push('--num-inference-steps', stepsToUse)
+  args.push('--max-steps', stepsToUse)
+  args.push('--request-option', `num_inference_steps=${stepsToUse}`)
+
   if (opts.lyrics && opts.lyrics.trim()) {
+    args.push('--lyrics', opts.lyrics.trim())
     args.push('--request-option', `lyrics=${opts.lyrics.trim()}`)
   }
-  if (opts.duration) {
-    args.push('--request-option', `duration=${opts.duration}`)
-    args.push('--request-option', `duration_sec=${opts.duration}`)
-  }
-  
-  // Default steps: Turbo models only need 8-16 steps; standard models use 25
-  const isTurbo = opts.modelId.toLowerCase().includes('turbo') || modelPath.toLowerCase().includes('turbo')
-  const defaultSteps = isTurbo ? '12' : '25'
-  const stepsToUse = opts.steps ? String(opts.steps) : defaultSteps
-  args.push('--request-option', `num_inference_steps=${stepsToUse}`)
-  args.push('--request-option', `steps=${stepsToUse}`)
 
   const onProgress = (chunk: string) => {
     try { _e.sender.send('gen:progress', { type: 'music', text: chunk }) } catch {}
