@@ -61,43 +61,120 @@ function useModels(){
   return {models, refresh}
 }
 
-/* Sleek Model Picker */
-function ModelPicker({models, value, onChange, placeholder="Choose model"}:{models:any[], value:string, onChange:(id:string)=>void, placeholder?:string}){
-  const [open,setOpen]=useState(false)
-  const [q,setQ]=useState('')
-  const ref=useRef<HTMLDivElement>(null)
-  const selected = models.find((m:any)=> m.id===value)
-  const filtered = models.filter((m:any)=> !q || `${m.label} ${m.id} ${m.family} ${m.description}`.toLowerCase().includes(q.toLowerCase()))
-  useEffect(()=>{
-    const h=(e:MouseEvent)=>{ if(ref.current && !ref.current.contains(e.target as Node)) setOpen(false)}
-    document.addEventListener('mousedown',h); return()=> document.removeEventListener('mousedown',h)
-  },[])
+/* Sleek Universal Model Picker */
+function ModelPicker({
+  models,
+  value,
+  onChange,
+  defaultTask = 'all',
+  placeholder = "Choose model"
+}: {
+  models: any[],
+  value: string,
+  onChange: (id: string) => void,
+  defaultTask?: string,
+  placeholder?: string
+}) {
+  const [open, setOpen] = useState(false)
+  const [q, setQ] = useState('')
+  const [taskFilter, setTaskFilter] = useState<string>(defaultTask)
+  const ref = useRef<HTMLDivElement>(null)
+  const selected = models.find((m: any) => m.id === value)
+
+  const taskOptions = ['all', 'tts', 'music', 'asr', 'other']
+
+  const filtered = models.filter((m: any) => {
+    if (taskFilter !== 'all') {
+      if (taskFilter === 'other' && ['tts', 'music', 'asr'].includes(m.task)) return false
+      if (taskFilter !== 'other' && m.task !== taskFilter) return false
+    }
+    if (!q) return true
+    return `${m.label} ${m.id} ${m.family} ${m.description} ${m.task} ${m.primaryGguf || ''}`.toLowerCase().includes(q.toLowerCase())
+  })
+
+  useEffect(() => {
+    const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false) }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [])
+
+  const getTaskIcon = (task: string) => {
+    switch (task) {
+      case 'tts': return '🗣'
+      case 'music': return '♫'
+      case 'asr': return '●'
+      case 'sep': return '✂'
+      case 'vad': return '🎙'
+      default: return '▦'
+    }
+  }
+
   return (
     <div className="model-picker" ref={ref}>
-      <button className="model-trigger" onClick={()=> setOpen(!open)}>
-        <div className="opt-ico" style={{width:30,height:30,fontSize:13}}>{selected?.task==='tts'?'🗣':selected?.task==='music'?'♫':selected?.task==='asr'?'●':'▦'}</div>
-        <div className="meta">
-          <b>{selected ? `${selected.label} — ${selected.size}` : placeholder}</b>
-          <span>{selected ? `${selected.family} • ${selected.runtime}${selected.installed?' • installed':''}` : 'No model selected'}</span>
+      <button className="model-trigger" onClick={() => setOpen(!open)}>
+        <div className="opt-ico" style={{ width: 30, height: 30, fontSize: 13 }}>
+          {getTaskIcon(selected?.task || defaultTask)}
         </div>
-        <span className={selected?.installed?'badge-installed':'badge-missing'}>{selected?.installed?'● installed':'○ not installed'}</span>
-        <span className="chev">{open?'▲':'▼'}</span>
+        <div className="meta">
+          <b>{selected ? `${selected.label} — ${selected.size || 'GGUF'}` : placeholder}</b>
+          <span>
+            {selected
+              ? `${selected.family} • ${selected.task?.toUpperCase() || 'TASK'}${selected.primaryGguf ? ` • ${selected.primaryGguf}` : ''}${selected.installed ? ' • installed' : ''}`
+              : 'No model selected'}
+          </span>
+        </div>
+        <span className={selected?.installed ? 'badge-installed' : 'badge-missing'}>
+          {selected?.installed ? '● installed' : '○ not installed'}
+        </span>
+        <span className="chev">{open ? '▲' : '▼'}</span>
       </button>
+
       {open && (
         <div className="model-dropdown">
-          <div className="search"><input autoFocus placeholder="Search models…" value={q} onChange={e=> setQ(e.target.value)} /><span className="kbd">{filtered.length}</span></div>
+          <div className="search">
+            <input autoFocus placeholder="Search models, families, ggufs…" value={q} onChange={e => setQ(e.target.value)} />
+            <span className="kbd">{filtered.length}</span>
+          </div>
+          <div style={{ display: 'flex', gap: 4, padding: '4px 8px', background: 'var(--panel2)', borderBottom: '1px solid var(--border)', overflowX: 'auto' }}>
+            {taskOptions.map(t => (
+              <button
+                key={t}
+                type="button"
+                className={`btn ${taskFilter === t ? 'primary' : 'ghost'}`}
+                style={{ padding: '2px 8px', fontSize: 11, textTransform: 'uppercase' }}
+                onClick={() => setTaskFilter(t)}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
           <div className="list">
-            {filtered.map((m:any)=>(
-              <div key={m.id} className={`model-option ${m.id===value?'active':''}`} onClick={()=>{ onChange(m.id); setOpen(false); setQ('')}}>
-                <div className="opt-ico">{m.task==='tts'?'🗣':m.task==='music'?'♫':m.task==='asr'?'●':'▦'}</div>
-                <div style={{flex:1,minWidth:0}}>
-                  <div style={{display:'flex',gap:6,alignItems:'center'}}><b style={{whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{m.label}</b><span className="kbd">{m.size}</span><span className={m.installed?'badge-installed':'badge-missing'} style={{marginLeft:'auto'}}>{m.installed?'installed':'get'}</span></div>
-                  <div className="small mono" style={{whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{m.family} • {m.runtime} • {m.language.slice(0,22)}</div>
-                  <div className="small" style={{whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{m.description}</div>
+            {filtered.map((m: any) => (
+              <div key={m.id} className={`model-option ${m.id === value ? 'active' : ''}`} onClick={() => { onChange(m.id); setOpen(false); setQ('') }}>
+                <div className="opt-ico">{getTaskIcon(m.task)}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                    <b style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.label}</b>
+                    <span className="tag" style={{ fontSize: 9 }}>{m.task?.toUpperCase()}</span>
+                    <span className="kbd">{m.size || 'GGUF'}</span>
+                    <span className={m.installed ? 'badge-installed' : 'badge-missing'} style={{ marginLeft: 'auto' }}>
+                      {m.installed ? 'installed' : 'get'}
+                    </span>
+                  </div>
+                  <div className="small mono" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {m.family} • {m.primaryGguf ? `GGUF: ${m.primaryGguf}` : m.runtime}
+                  </div>
+                  <div className="small" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {m.description}
+                  </div>
                 </div>
               </div>
             ))}
-            {filtered.length===0 && <div className="small" style={{padding:12,textAlign:'center'}}>No match</div>}
+            {filtered.length === 0 && (
+              <div className="small" style={{ padding: 14, textAlign: 'center' }}>
+                No matching models found in filter. Switch tab above to <b>ALL</b> or download from Models tab.
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -107,8 +184,11 @@ function ModelPicker({models, value, onChange, placeholder="Choose model"}:{mode
 
 function TTS(){
   const {models}=useModels()
-  const ttsModels=models.filter((m:any)=> m.task==='tts' && m.installed)
-  const hasAnyInstalled = ttsModels.length>0
+  const installedModels = models.filter((m:any)=> m.installed)
+  const ttsModels = installedModels.filter((m:any)=> m.task==='tts')
+  const defaultList = ttsModels.length > 0 ? ttsModels : installedModels
+  const hasAnyInstalled = installedModels.length > 0
+
   const [modelId,setModelId]=useState('')
   const [text,setText]=useState('Hello! audio.cpp Studio is running locally — no Python needed. Try cloning a voice!')
   const [voiceId,setVoiceId]=useState('')
@@ -119,9 +199,15 @@ function TTS(){
   const [busy,setBusy]=useState(false)
   const [result,setResult]=useState<any>(null)
   const [outputs,setOutputs]=useState<any[]>([])
-  useEffect(()=>{ if(!modelId && ttsModels[0]) setModelId(ttsModels[0].id)},[ttsModels])
+
+  useEffect(()=>{
+    if(!modelId && defaultList[0]) setModelId(defaultList[0].id)
+  },[models])
   useEffect(()=>{ window.api.listOutputs().then(setOutputs)},[result])
   const fileName = voiceRef ? voiceRef.split(/\\|\//).pop() : ''
+
+  const selectedModel = models.find((m:any)=> m.id===modelId)
+
   return (
     <div style={{display:'grid', gap:14, maxWidth:1140}}>
       <div className="hero">
@@ -134,9 +220,17 @@ function TTS(){
       <div className="grid2" style={{alignItems:'start'}}>
         <div className="card">
           <h3><span className="dot"/> Script</h3>
-          <label className="small" style={{fontWeight:700}}>Model — installed only</label>
-          {hasAnyInstalled ? <ModelPicker models={ttsModels} value={modelId} onChange={setModelId} placeholder="Choose an installed TTS model" /> : <div style={{padding:'12px', background:'rgba(250,204,21,.08)', border:'1px solid rgba(250,204,21,.2)', borderRadius:8, fontSize:12}}>No TTS models installed — go to <b>Models</b> tab and download one (e.g. PocketTTS, Qwen3-TTS). All HF models are available there.</div>}
-          <div className="small" style={{marginTop:6}}>{ttsModels.length} installed • filtered to installed only</div>
+          <label className="small" style={{fontWeight:700}}>Model — installed</label>
+          {hasAnyInstalled ? (
+            <ModelPicker models={installedModels} value={modelId} onChange={setModelId} defaultTask="tts" placeholder="Choose an installed TTS model" />
+          ) : (
+            <div style={{padding:'12px', background:'rgba(250,204,21,.08)', border:'1px solid rgba(250,204,21,.2)', borderRadius:8, fontSize:12}}>
+              No models installed yet — go to <b>Models</b> tab to download PocketTTS, Qwen3-TTS, or import a .gguf.
+            </div>
+          )}
+          <div className="small mono" style={{marginTop:6}}>
+            {selectedModel ? `Family: ${selectedModel.family} • Task: ${selectedModel.task.toUpperCase()} • ${selectedModel.primaryGguf || selectedModel.runtime}` : `${installedModels.length} installed models`}
+          </div>
 
           <div style={{marginTop:12}} className="grid2">
             <div><label className="small" style={{fontWeight:700}}>Language</label><select className="select" value={language} onChange={e=> setLanguage(e.target.value)}><option value="en">English</option><option value="es">Spanish</option><option value="zh">中文</option><option value="ja">日本語</option><option value="de">Deutsch</option><option value="fr">Français</option></select></div>
@@ -151,7 +245,7 @@ function TTS(){
 
           <button className="btn primary" style={{width:'100%', justifyContent:'center', padding:'12px', marginTop:14, fontSize:14}} disabled={busy || !modelId || !text.trim()} onClick={async()=>{
             setBusy(true); setResult(null)
-            try{ const r=await window.api.tts({ modelId, family: ttsModels.find((m:any)=> m.id===modelId)?.family, text, voiceRef: voiceRef||undefined, voiceId: voiceId||undefined, referenceText: referenceText||undefined, language }); setResult(r)}
+            try{ const r=await window.api.tts({ modelId, family: selectedModel?.family, text, voiceRef: voiceRef||undefined, voiceId: voiceId||undefined, referenceText: referenceText||undefined, language }); setResult(r)}
             catch(e:any){ setResult({error:e.message}) }
             setBusy(false)
           }}>{busy?'Synthesizing…':'▶ Generate speech'}</button>
@@ -216,31 +310,119 @@ function TTS(){
 
 function Music(){
   const {models}=useModels()
-  const musicModels=models.filter((m:any)=> m.task==='music' && m.installed)
-  const hasAnyMusic = musicModels.length>0
+  const installedModels = models.filter((m:any)=> m.installed)
+  const musicModels = installedModels.filter((m:any)=> m.task==='music')
+  const defaultList = musicModels.length > 0 ? musicModels : installedModels
+  const hasAnyInstalled = installedModels.length > 0
+
   const [modelId,setModelId]=useState('')
   const [prompt,setPrompt]=useState('lofi hip hop, warm Rhodes, gentle drums, cozy night')
   const [lyrics,setLyrics]=useState('')
   const [duration,setDuration]=useState('30')
+  const [customFamily,setCustomFamily]=useState('')
+  const [showOptions,setShowOptions]=useState(false)
   const [busy,setBusy]=useState(false)
   const [result,setResult]=useState<any>(null)
-  useEffect(()=>{ if(!modelId && musicModels[0]) setModelId(musicModels[0].id)},[musicModels])
+
+  useEffect(()=>{
+    if(!modelId && defaultList[0]) setModelId(defaultList[0].id)
+  },[models])
+
+  const selectedModel = models.find((m:any)=> m.id===modelId)
+
   return (
     <div style={{display:'grid', gap:14, maxWidth:1020}}>
-      <div className="hero"><h2>Music</h2><p>Text to song — describe a vibe, get a track.</p></div>
+      <div className="hero"><h2>Music & Audio Generation</h2><p>Text to song, instrumental vibe, or sound effects — pure C++ GGUF inference.</p></div>
       <div className="card">
         <h3><span className="dot"/> Compose</h3>
-        <label className="small" style={{fontWeight:700}}>Model — installed only</label>
-        {hasAnyMusic ? <ModelPicker models={musicModels} value={modelId} onChange={setModelId} placeholder="Choose an installed music model" /> : <div style={{padding:'12px', background:'rgba(250,204,21,.08)', border:'1px solid rgba(250,204,21,.2)', borderRadius:8, fontSize:12}}>No music models installed — download one in <b>Models</b> (ACE-Step, Stable Audio).</div>}
-        <div style={{marginTop:10}}><label className="small" style={{fontWeight:700}}>Duration</label><select className="select" value={duration} onChange={e=> setDuration(e.target.value)}><option value="15">15s</option><option value="30">30s</option><option value="60">60s</option><option value="120">120s</option></select></div>
-        <div style={{marginTop:12}}><label className="small" style={{fontWeight:700}}>Prompt</label><textarea className="textarea" style={{minHeight:80}} value={prompt} onChange={e=> setPrompt(e.target.value)} /></div>
-        <div style={{marginTop:12}}><label className="small" style={{fontWeight:700}}>Lyrics <span style={{fontWeight:400}}>(optional)</span></label><textarea className="textarea" style={{minHeight:80}} value={lyrics} onChange={e=> setLyrics(e.target.value)} placeholder="Verse / chorus..." /></div>
-        <div className="row" style={{marginTop:12, justifyContent:'end'}}><button className="btn primary" disabled={busy || !modelId || !prompt.trim()} onClick={async()=>{
-          setBusy(true); setResult(null); try{ const r=await window.api.music({ modelId, family: musicModels.find((m:any)=> m.id===modelId)?.family, prompt, lyrics, duration }); setResult(r)}catch(e:any){ setResult({error:e.message})}; setBusy(false)
-        }}>{busy?'Composing…':'♫ Generate music'}</button></div>
-        {result && <div style={{marginTop:12, padding:12, background:'var(--panel2)', border:'1px solid var(--border)', borderRadius:10}}>
-          {result.error ? <div style={{color:'#F87171'}}>{result.error}</div> : <><div className="small mono">via {result.via}</div><div style={{fontWeight:700, wordBreak:'break-all', fontSize:12}}>{result.outFile}</div>{result.outFile?.endsWith('.wav') && <audio controls src={`file://${result.outFile}`} style={{width:'100%', marginTop:8}}/>}<div className="row" style={{marginTop:8}}><button className="btn" onClick={()=> window.api.revealOutput(result.outFile)}>Show</button></div></>}
-        </div>}
+        <label className="small" style={{fontWeight:700}}>Model — installed</label>
+        {hasAnyInstalled ? (
+          <ModelPicker models={installedModels} value={modelId} onChange={setModelId} defaultTask="music" placeholder="Choose an installed music / gen model" />
+        ) : (
+          <div style={{padding:'12px', background:'rgba(250,204,21,.08)', border:'1px solid rgba(250,204,21,.2)', borderRadius:8, fontSize:12}}>
+            No models installed yet — download ACE-Step 1.5, Stable Audio, or HeartMuLa in <b>Models</b> tab, or import a custom GGUF.
+          </div>
+        )}
+        
+        {selectedModel && (
+          <div className="small mono" style={{marginTop:6, display:'flex', gap:8, alignItems:'center', flexWrap:'wrap'}}>
+            <span className="tag">Family: {customFamily || selectedModel.family}</span>
+            <span className="tag">Task: {selectedModel.task.toUpperCase()}</span>
+            {selectedModel.primaryGguf && <span className="kbd">{selectedModel.primaryGguf}</span>}
+            <button className="btn ghost" style={{padding:'2px 6px', fontSize:10, marginLeft:'auto'}} onClick={()=> setShowOptions(!showOptions)}>
+              {showOptions ? 'Hide options' : '⚙ Advanced options'}
+            </button>
+          </div>
+        )}
+
+        {showOptions && (
+          <div style={{marginTop:10, padding:10, background:'var(--panel2)', border:'1px solid var(--border)', borderRadius:8}}>
+            <label className="small" style={{fontWeight:700}}>Override Model Family (e.g. ace_step, stable_audio, minimax_music3, heartmula)</label>
+            <input className="input mono" placeholder={selectedModel?.family || 'ace_step'} value={customFamily} onChange={e=> setCustomFamily(e.target.value)} style={{marginTop:4, fontSize:12}} />
+          </div>
+        )}
+
+        <div style={{marginTop:12}}>
+          <label className="small" style={{fontWeight:700}}>Duration</label>
+          <select className="select" value={duration} onChange={e=> setDuration(e.target.value)}>
+            <option value="15">15 seconds</option>
+            <option value="30">30 seconds (standard)</option>
+            <option value="60">60 seconds (1 minute)</option>
+            <option value="120">120 seconds (2 minutes)</option>
+          </select>
+        </div>
+
+        <div style={{marginTop:12}}>
+          <label className="small" style={{fontWeight:700}}>Prompt (Music style, instruments, mood)</label>
+          <textarea className="textarea" style={{minHeight:80}} value={prompt} onChange={e=> setPrompt(e.target.value)} placeholder="e.g. upbeat electro pop with energetic synth riffs, clear drums, inspiring melody..." />
+        </div>
+
+        <div style={{marginTop:12}}>
+          <label className="small" style={{fontWeight:700}}>Lyrics <span style={{fontWeight:400, color:'var(--muted)'}}>(optional — for models supporting singing/lyrics)</span></label>
+          <textarea className="textarea" style={{minHeight:80}} value={lyrics} onChange={e=> setLyrics(e.target.value)} placeholder="[Verse 1]&#10;Night falls over the city glow...&#10;&#10;[Chorus]&#10;We run under the starlight..." />
+        </div>
+
+        <div className="row" style={{marginTop:14, justifyContent:'end'}}>
+          <button className="btn primary" disabled={busy || !modelId || !prompt.trim()} onClick={async()=>{
+            setBusy(true); setResult(null);
+            try{
+              const r = await window.api.music({
+                modelId,
+                family: customFamily || selectedModel?.family,
+                prompt,
+                lyrics,
+                duration
+              })
+              setResult(r)
+            } catch(e:any){
+              setResult({ error: e.message })
+            }
+            setBusy(false)
+          }}>
+            {busy ? 'Composing track…' : '♫ Generate music'}
+          </button>
+        </div>
+
+        {result && (
+          <div style={{marginTop:12, padding:12, background:'var(--panel2)', border:'1px solid var(--border)', borderRadius:10}}>
+            {result.error ? (
+              <div style={{color:'#F87171', whiteSpace:'pre-wrap', lineHeight:1.5}}>
+                <b>Generation error:</b>
+                <div style={{marginTop:4, fontSize:12}}>{result.error}</div>
+              </div>
+            ) : (
+              <>
+                <div className="small mono">via {result.via}</div>
+                <div style={{fontWeight:700, wordBreak:'break-all', fontSize:12, marginTop:4}}>{result.outFile}</div>
+                {result.outFile?.endsWith('.wav') && <audio controls src={`file://${result.outFile}`} style={{width:'100%', marginTop:8}}/>}
+                <div className="row" style={{marginTop:8}}>
+                  <button className="btn" onClick={()=> window.api.revealOutput(result.outFile)}>Show in folder</button>
+                  <button className="btn ghost" onClick={()=> navigator.clipboard.writeText(result.outFile)}>Copy path</button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )
@@ -248,21 +430,36 @@ function Music(){
 
 function ASR(){
   const {models}=useModels()
-  const asrModels=models.filter((m:any)=> m.task==='asr' && m.installed)
-  const hasAnyAsr = asrModels.length>0
+  const installedModels = models.filter((m:any)=> m.installed)
+  const asrModels = installedModels.filter((m:any)=> m.task==='asr')
+  const defaultList = asrModels.length > 0 ? asrModels : installedModels
+  const hasAnyAsr = installedModels.length > 0
+
   const [modelId,setModelId]=useState('')
   const [audioPath,setAudioPath]=useState('')
   const [drag,setDrag]=useState(false)
   const [busy,setBusy]=useState(false)
   const [result,setResult]=useState<any>(null)
-  useEffect(()=>{ if(!modelId && asrModels[0]) setModelId(asrModels[0].id)},[asrModels])
+
+  useEffect(()=>{
+    if(!modelId && defaultList[0]) setModelId(defaultList[0].id)
+  },[models])
+
+  const selectedModel = models.find((m:any)=> m.id===modelId)
+
   return (
     <div style={{display:'grid', gap:14, maxWidth:1020}}>
       <div className="hero"><h2>Speech → Text</h2><p>Long meetings, podcasts — VAD chunking handles hours.</p></div>
       <div className="card">
         <h3><span className="dot" style={{background:'#22C55E'}}/> Transcribe</h3>
-        <label className="small" style={{fontWeight:700}}>Model — installed only</label>
-        {hasAnyAsr ? <ModelPicker models={asrModels} value={modelId} onChange={setModelId} placeholder="Choose an installed ASR model" /> : <div style={{padding:'12px', background:'rgba(250,204,21,.08)', border:'1px solid rgba(250,204,21,.2)', borderRadius:8, fontSize:12}}>No ASR models installed — download one in <b>Models</b> (Qwen3-ASR, Parakeet).</div>}
+        <label className="small" style={{fontWeight:700}}>Model — installed</label>
+        {hasAnyAsr ? (
+          <ModelPicker models={installedModels} value={modelId} onChange={setModelId} defaultTask="asr" placeholder="Choose an installed ASR model" />
+        ) : (
+          <div style={{padding:'12px', background:'rgba(250,204,21,.08)', border:'1px solid rgba(250,204,21,.2)', borderRadius:8, fontSize:12}}>
+            No ASR models installed — download Qwen3-ASR or Parakeet in <b>Models</b> tab.
+          </div>
+        )}
         <div style={{marginTop:12}} className={`audio-drop ${drag?'drag':''}`} onDragOver={e=>{e.preventDefault(); setDrag(true)}} onDragLeave={()=> setDrag(false)} onDrop={async e=>{
           e.preventDefault(); setDrag(false); const f=(e.dataTransfer.files[0] as any)?.path; if(f) setAudioPath(f)
         }} onClick={async()=>{
@@ -274,7 +471,12 @@ function ASR(){
           {audioPath && <audio controls src={`file://${audioPath}`} style={{width:'100%', maxWidth:480, marginTop:6}}/>}
         </div>
         <button className="btn primary" style={{width:'100%', justifyContent:'center', marginTop:12}} disabled={busy || !audioPath || !modelId} onClick={async()=>{
-          setBusy(true); setResult(null); try{ const r=await window.api.asr({ modelId, family: asrModels.find((m:any)=> m.id===modelId)?.family, audioPath }); setResult(r)}catch(e:any){ setResult({error:e.message})}; setBusy(false)
+          setBusy(true); setResult(null);
+          try{
+            const r=await window.api.asr({ modelId, family: selectedModel?.family, audioPath });
+            setResult(r)
+          }catch(e:any){ setResult({error:e.message})};
+          setBusy(false)
         }}>{busy?'Transcribing…':'Transcribe'}</button>
         {result && <div style={{marginTop:12, padding:12, background:'var(--panel2)', border:'1px solid var(--border)', borderRadius:10}}>
           {result.error ? <div style={{color:'#F87171'}}>{result.error}</div> : <><div className="small mono">via {result.via}</div><div style={{whiteSpace:'pre-wrap', lineHeight:1.6, marginTop:6, background:'var(--bg)', padding:10, borderRadius:8, border:'1px solid var(--border)', fontSize:13}}>{result.text}</div><div className="row" style={{marginTop:8}}><button className="btn" onClick={()=> navigator.clipboard.writeText(result.text)}>Copy</button><button className="btn ghost" onClick={()=>{
@@ -294,16 +496,30 @@ function Models(){
   const [expanded,setExpanded]=useState<string|null>(null)
   const [variants,setVariants]=useState<Record<string,any[]>>({})
   const [loadingV,setLoadingV]=useState<Record<string,boolean>>({})
+  const [editingId,setEditingId]=useState<string|null>(null)
+  const [editTask,setEditTask]=useState('tts')
+  const [editFamily,setEditFamily]=useState('')
+  const [editLabel,setEditLabel]=useState('')
+  const [testResult,setTestResult]=useState<Record<string,string>>({})
+
   const refresh=async()=>{
     try{
       const all = await window.api.listAllModels()
       setModels(all)
     }catch{ setModels(await window.api.listModels()) }
   }
-  useEffect(()=>{ refresh(); const off=window.api.onDownloadProgress((d:any)=>{ setDownloading(prev=> ({...prev, [d.id]: d.pct, [d.id+'_note']: d.note||''})); if(d.done || d.error) setTimeout(refresh,400)}); return ()=> off && off() },[])
+  useEffect(()=>{
+    refresh();
+    const off=window.api.onDownloadProgress((d:any)=>{
+      setDownloading(prev=> ({...prev, [d.id]: d.pct, [d.id+'_note']: d.note||''}));
+      if(d.done || d.error) setTimeout(refresh,400)
+    });
+    return ()=> off && off()
+  },[])
+
   const filtered=models.filter((m:any)=>{
     if(filter!=='all' && !m.task.includes(filter as any) && !(filter==='other' && !['tts','music','asr'].includes(m.task))) return false
-    if(query && !`${m.label} ${m.family} ${m.description}`.toLowerCase().includes(query.toLowerCase())) return false
+    if(query && !`${m.label} ${m.family} ${m.description} ${m.primaryGguf||''}`.toLowerCase().includes(query.toLowerCase())) return false
     return true
   })
   const fmtSize=(b:number)=> b>1024*1024*1024 ? `${(b/1024/1024/1024).toFixed(2)} GB` : b>1024*1024 ? `${(b/1024/1024).toFixed(0)} MB` : `${(b/1024).toFixed(0)} KB`
@@ -317,62 +533,171 @@ function Models(){
     }catch(e:any){ alert(e.message) }
     setLoadingV(p=>({...p,[id]:false}))
   }
+
+  const startEdit = (m:any) => {
+    setEditingId(m.id)
+    setEditTask(m.task || 'tts')
+    setEditFamily(m.family || m.id)
+    setEditLabel(m.label || m.id)
+  }
+
+  const saveEdit = async (id:string) => {
+    try {
+      await window.api.updateCustomModel(id, { task: editTask, family: editFamily, label: editLabel })
+      setEditingId(null)
+      refresh()
+    } catch(e:any){ alert(e.message) }
+  }
+
+  const testModelRun = async (id:string) => {
+    try {
+      setTestResult(p=>({...p, [id]: 'Testing…'}))
+      const r = await window.api.testModel(id)
+      if (r.ok) {
+        setTestResult(p=>({...p, [id]: `✓ Model OK: ${r.resolved?.primaryFileName || 'GGUF verified'}`}))
+      } else {
+        setTestResult(p=>({...p, [id]: `✗ Test failed: ${r.error}`}))
+      }
+    } catch(e:any){
+      setTestResult(p=>({...p, [id]: `✗ Error: ${e.message}`}))
+    }
+  }
+
   return (
     <div style={{display:'grid', gap:14}}>
       <div className="card">
-        <div className="row" style={{justifyContent:'space-between'}}><h3 style={{margin:0}}><span className="dot"/> Models — {models.filter((m:any)=> m.installed).length} / {models.length}</h3><div className="row"><button className="btn ghost" onClick={async()=>{
-                    const f=await window.api.chooseFile([{name:'GGUF', extensions:['gguf']}])
-                    if(f){
-                      const suggested = f.split(/\\|\//).pop()?.replace(/\.gguf$/i,'').toLowerCase().replace(/[^a-z0-9]+/g,'_') || 'custom_model'
-                      const id = prompt('Import as model ID (folder name):', suggested)
-                      if(id){ try{ await window.api.importModel(id.trim(), f); refresh(); alert(`Imported ${f} → models/${id}`)}catch(e:any){ alert(e.message)}}
-                    }
-                  }}>Import GGUF</button><button className="btn ghost" onClick={async()=>{
-                    const d=await window.api.chooseFolder()
-                    if(d){
-                      const suggested = d.split(/\\|\//).pop()?.toLowerCase().replace(/[^a-z0-9]+/g,'_') || 'custom_model'
-                      const id = prompt('Import folder as model ID:', suggested)
-                      if(id){ try{ await window.api.importModel(id.trim(), d); refresh(); alert(`Imported folder ${d} → models/${id}`)}catch(e:any){ alert(e.message)}}
-                    }
-                  }}>Import Folder</button><button className="btn ghost" onClick={()=> require('electron').shell.openExternal('https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main')}>Browse HF ↗</button><button className="btn" onClick={refresh}>↻ Refresh</button></div></div>
+        <div className="row" style={{justifyContent:'space-between'}}>
+          <h3 style={{margin:0}}><span className="dot"/> Models — {models.filter((m:any)=> m.installed).length} installed / {models.length} total</h3>
+          <div className="row">
+            <button className="btn ghost" onClick={async()=>{
+              const f=await window.api.chooseFile([{name:'GGUF', extensions:['gguf']}])
+              if(f){
+                const suggested = f.split(/\\|\//).pop()?.replace(/\.gguf$/i,'').toLowerCase().replace(/[^a-z0-9]+/g,'_') || 'custom_model'
+                const id = prompt('Import as model ID (folder name):', suggested)
+                if(id){
+                  const taskPrompt = prompt('Task (tts, music, asr, sep, vad, other):', 'music') || 'other'
+                  const familyPrompt = prompt('Family (ace_step, stable_audio, pocket_tts, qwen3_tts, etc.):', id) || id
+                  try{
+                    await window.api.importModel(id.trim(), f, taskPrompt.trim(), familyPrompt.trim());
+                    refresh();
+                    alert(`Imported ${f} → models/${id}`)
+                  }catch(e:any){ alert(e.message)}
+                }
+              }
+            }}>Import GGUF</button>
+
+            <button className="btn ghost" onClick={async()=>{
+              const d=await window.api.chooseFolder()
+              if(d){
+                const suggested = d.split(/\\|\//).pop()?.toLowerCase().replace(/[^a-z0-9]+/g,'_') || 'custom_model'
+                const id = prompt('Import folder as model ID:', suggested)
+                if(id){
+                  const taskPrompt = prompt('Task (tts, music, asr, sep, vad, other):', 'music') || 'other'
+                  const familyPrompt = prompt('Family (ace_step, stable_audio, pocket_tts, etc.):', id) || id
+                  try{
+                    await window.api.importModel(id.trim(), d, taskPrompt.trim(), familyPrompt.trim());
+                    refresh();
+                    alert(`Imported folder ${d} → models/${id}`)
+                  }catch(e:any){ alert(e.message)}
+                }
+              }
+            }}>Import Folder</button>
+
+            <button className="btn ghost" onClick={()=> require('electron').shell.openExternal('https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main')}>Browse HF ↗</button>
+            <button className="btn" onClick={refresh}>↻ Refresh</button>
+          </div>
+        </div>
+
         <div className="row" style={{marginTop:10}}>
-          <input className="input" placeholder="Search…" value={query} onChange={e=> setQuery(e.target.value)} style={{maxWidth:320}}/>
+          <input className="input" placeholder="Search models, files, families…" value={query} onChange={e=> setQuery(e.target.value)} style={{maxWidth:320}}/>
           <div className="row">{(['all','tts','music','asr','other'] as const).map(f=>(
-            <button key={f} className={filter===f?'btn primary':'btn'} onClick={()=> setFilter(f)}>{f}</button>
+            <button key={f} className={filter===f?'btn primary':'btn'} onClick={()=> setFilter(f)}>{f.toUpperCase()}</button>
           ))}</div>
         </div>
-        <div className="small" style={{marginTop:8}}>Each HF folder has <b>Q8</b> / <b>Q16/BF16</b> etc. Click <b>Versions</b> to see sizes and pick — Q8 is smaller & faster.</div>
+        <div className="small" style={{marginTop:8}}>Audio models run natively in C++. Click <b>Versions</b> to select quantized GGUF variants (Q8 / Q4 / BF16).</div>
       </div>
+
       <div style={{display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(360px,1fr))', gap:10}}>
         {filtered.map((m:any)=>{
           const pct=downloading[m.id]; const isDl= pct!==undefined && pct<100
           const isExpanded = expanded===m.id
           const vlist = variants[m.id] || []
+          const isEditing = editingId===m.id
+
           return (
             <div key={m.id} className={`model-card ${m.installed?'installed':''}`}>
-              <div className="row" style={{justifyContent:'space-between'}}><div style={{fontWeight:700, fontSize:13}}>{m.label}</div><span className="tag">{m.task.toUpperCase()} • {m.size}</span></div>
+              <div className="row" style={{justifyContent:'space-between'}}>
+                <div style={{fontWeight:700, fontSize:13}}>{m.label}</div>
+                <span className="tag">{m.task?.toUpperCase()} • {m.size || 'GGUF'}</span>
+              </div>
               <div className="small">{m.description}</div>
-              <div className="small mono">{m.family} • {m.runtime} {m.hfFolder && `• ${m.hfFolder}`}</div>
+              <div className="small mono">
+                Family: {m.family} • {m.primaryGguf ? `File: ${m.primaryGguf}` : m.runtime} {m.hfFolder && `• ${m.hfFolder}`}
+              </div>
+
+              {testResult[m.id] && (
+                <div className="small mono" style={{marginTop:4, padding:'4px 8px', borderRadius:6, background:'var(--panel2)', border:'1px solid var(--border)'}}>
+                  {testResult[m.id]}
+                </div>
+              )}
+
               {isDl && <div className="progress"><i style={{width:`${pct}%`}}></i></div>}
               {isDl && <div className="small mono">{pct}% {downloading[m.id+'_note']||''}</div>}
+
+              {isEditing ? (
+                <div style={{marginTop:8, padding:8, background:'var(--bg)', border:'1px solid var(--border)', borderRadius:8}}>
+                  <div className="small" style={{fontWeight:700, marginBottom:4}}>Edit Model Metadata</div>
+                  <div style={{display:'grid', gap:6}}>
+                    <input className="input" placeholder="Display Label" value={editLabel} onChange={e=> setEditLabel(e.target.value)} />
+                    <div style={{display:'flex', gap:6}}>
+                      <select className="select" value={editTask} onChange={e=> setEditTask(e.target.value)} style={{flex:1}}>
+                        <option value="tts">TTS (Speech)</option>
+                        <option value="music">Music / Gen</option>
+                        <option value="asr">ASR (Transcribe)</option>
+                        <option value="sep">Separation</option>
+                        <option value="vad">VAD</option>
+                        <option value="other">Other</option>
+                      </select>
+                      <input className="input mono" placeholder="Family (e.g. ace_step)" value={editFamily} onChange={e=> setEditFamily(e.target.value)} style={{flex:1}} />
+                    </div>
+                    <div className="row" style={{justifyContent:'end', marginTop:4}}>
+                      <button className="btn ghost" onClick={()=> setEditingId(null)}>Cancel</button>
+                      <button className="btn primary" onClick={()=> saveEdit(m.id)}>Save</button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
               <div className="row" style={{marginTop:6, flexWrap:'wrap'}}>
-                {m.installed ? <><span className="badge-installed">● Installed</span><button className="btn ghost" onClick={async()=>{ await window.api.deleteModel(m.id); refresh()}}>Remove</button><button className="btn" onClick={()=> window.api.openFolder(m.localPath)}>Open</button><button className="btn ghost" onClick={async()=>{
-                    const f=await window.api.chooseFile([{name:'GGUF', extensions:['gguf']}])
-                    if(f){ try{ await window.api.importModel(m.id, f); refresh(); alert(`Re-imported → ${m.id}`)}catch(e:any){ alert(e.message)}}
-                  }}>Import</button></> : <>
-                  <button className="btn" disabled={loadingV[m.id]} onClick={()=> loadVariants(m.id)}>{loadingV[m.id]?'Loading…': isExpanded ? 'Hide' : 'Versions'}</button>
-                  <button className="btn primary" disabled={isDl} onClick={async()=>{ setDownloading(p=> ({...p,[m.id]:0})); try{ await window.api.downloadModel(m.id)}catch(e:any){ alert(e.message); setDownloading(p=>{const n={...p}; delete n[m.id]; return n})}}}>⬇ Best match</button>
-                  <button className="btn" disabled={isDl} onClick={async()=>{ setDownloading(p=> ({...p,[m.id]:0})); try{ await window.api.downloadAllModel(m.id)}catch(e:any){ alert(e.message); setDownloading(p=>{const n={...p}; delete n[m.id]; return n})}}}>⬇ All files</button>
-                  <button className="btn" onClick={async()=>{
-                    const url=prompt('Direct GGUF/HF URL for '+m.id); if(url){ setDownloading(p=> ({...p,[m.id]:0})); await window.api.downloadModel(m.id, url)}
-                  }}>URL</button>
-                  <button className="btn" onClick={async()=>{
-                    const f=await window.api.chooseFile([{name:'GGUF', extensions:['gguf']}])
-                    if(f){ try{ await window.api.importModel(m.id, f); refresh(); alert(`Imported → ${m.id}`)}catch(e:any){ alert(e.message)}}
-                  }}>Import</button>
-                </>}
+                {m.installed ? (
+                  <>
+                    <span className="badge-installed">● Installed</span>
+                    <button className="btn" onClick={()=> testModelRun(m.id)}>Test</button>
+                    <button className="btn ghost" onClick={()=> startEdit(m)}>Edit</button>
+                    <button className="btn ghost" onClick={async()=>{ await window.api.deleteModel(m.id); refresh()}}>Remove</button>
+                    <button className="btn" onClick={()=> window.api.openFolder(m.localPath)}>Open</button>
+                    <button className="btn ghost" onClick={async()=>{
+                      const f=await window.api.chooseFile([{name:'GGUF', extensions:['gguf']}])
+                      if(f){ try{ await window.api.importModel(m.id, f); refresh(); alert(`Re-imported → ${m.id}`)}catch(e:any){ alert(e.message)}}
+                    }}>Import</button>
+                  </>
+                ) : (
+                  <>
+                    <button className="btn" disabled={loadingV[m.id]} onClick={()=> loadVariants(m.id)}>{loadingV[m.id]?'Loading…': isExpanded ? 'Hide' : 'Versions'}</button>
+                    <button className="btn primary" disabled={isDl} onClick={async()=>{ setDownloading(p=> ({...p,[m.id]:0})); try{ await window.api.downloadModel(m.id)}catch(e:any){ alert(e.message); setDownloading(p=>{const n={...p}; delete n[m.id]; return n})}}}>⬇ Best match</button>
+                    <button className="btn" disabled={isDl} onClick={async()=>{ setDownloading(p=> ({...p,[m.id]:0})); try{ await window.api.downloadAllModel(m.id)}catch(e:any){ alert(e.message); setDownloading(p=>{const n={...p}; delete n[m.id]; return n})}}}>⬇ All files</button>
+                    <button className="btn" onClick={async()=>{
+                      const url=prompt('Direct GGUF/HF URL for '+m.id); if(url){ setDownloading(p=> ({...p,[m.id]:0})); await window.api.downloadModel(m.id, url)}
+                    }}>URL</button>
+                    <button className="btn" onClick={async()=>{
+                      const f=await window.api.chooseFile([{name:'GGUF', extensions:['gguf']}])
+                      if(f){ try{ await window.api.importModel(m.id, f); refresh(); alert(`Imported → ${m.id}`)}catch(e:any){ alert(e.message)}}
+                    }}>Import</button>
+                  </>
+                )}
                 {m.hfFolder && <button className="btn ghost" onClick={()=> require('electron').shell.openExternal(`https://huggingface.co/audio-cpp/audio.cpp-gguf/tree/main/${m.hfFolder}`)}>HF ↗</button>}
               </div>
+
               {isExpanded && (
                 <div style={{marginTop:8, padding:8, background:'var(--bg)', border:'1px solid var(--border)', borderRadius:8}}>
                   <div className="small" style={{fontWeight:700, marginBottom:6}}>Available GGUF versions — {vlist.length} files</div>

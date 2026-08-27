@@ -11,6 +11,7 @@ export interface AppSettings {
   theme: 'dark' | 'light'
   defaultLanguage: string
   autoStartServer: boolean
+  customModels?: Record<string, { family?: string, task?: string, label?: string, description?: string }>
 }
 
 const DEFAULT_DATA_ROOT = path.join(app.getPath('documents'), 'audio.cpp Studio')
@@ -49,6 +50,7 @@ export function loadSettings(): AppSettings {
     theme: s.theme ?? 'dark',
     defaultLanguage: s.defaultLanguage ?? 'en',
     autoStartServer: s.autoStartServer ?? true,
+    customModels: s.customModels ?? {},
   }
   // auto-detect backend if not set but exists
   if (!merged.backendPath) {

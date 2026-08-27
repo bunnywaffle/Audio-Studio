@@ -4,7 +4,7 @@ import * as fs from 'fs'
 import * as cp from 'child_process'
 import { loadSettings, saveSettings } from './settings'
 import { detectBackend, importBackendFromZip, runCliHelp, getBackendBin, runServerHealth, fetchGithubReleases, downloadBackendFromUrl, testBackend, listBackends, selectBackend, deleteBackend, repairBackend } from './backend'
-import { scanInstalled, deleteModel, getModelPath, getModelsDir } from './models'
+import { scanInstalled, deleteModel, getModelPath, getModelsDir, resolveInstalledModel, resolveModelFamily, resolveModelTask, findAllGgufFiles } from './models'
 import { startServer, stopServer, isServerRunning, getServerPid, getServerStatus } from './server'
 
 let win: BrowserWindow | null = null
@@ -124,9 +124,9 @@ ipcMain.handle('backend:downloadRelease', async (e, url:string)=>{
   return { ...r, info: detectBackend(settings.backendPath) }
 })
 
-ipcMain.handle('models:list', async () => scanInstalled(settings.dataRoot))
+ipcMain.handle('models:list', async () => scanInstalled(settings.dataRoot, settings.customModels))
 ipcMain.handle('models:listAll', async () => {
-  const base = scanInstalled(settings.dataRoot)
+  const base = scanInstalled(settings.dataRoot, settings.customModels)
   try{
     const { fetchAllHfFolders, CURATED_MODELS } = await import('./models')
     const folders = await fetchAllHfFolders()
@@ -134,21 +134,21 @@ ipcMain.handle('models:listAll', async () => {
     const dynamic: any[] = folders.filter(f=> !curatedFolders.has(f.folder)).map(f=>{
       const id = f.folder.toLowerCase().replace(/[^a-z0-9]+/g,'_').replace(/^_+|_+$/g,'')
       const label = f.folder.replace(/-GGUF$/,'').replace(/-/g,' ')
-      // infer task
-      const n = f.folder.toLowerCase()
-      let task: any = 'other'
-      if(n.includes('tts') || n.includes('voice') || n.includes('vibe') || n.includes('chatter') || n.includes('fish') || n.includes('higgs-tts') || n.includes('index')) task='tts'
-      else if(n.includes('asr') || n.includes('whisper') || n.includes('parakeet') || n.includes('nemotron') || n.includes('qwen3-asr') || n.includes('fun-asr') || n.includes('voxtral') || n.includes('hviske') || n.includes('citrinet') || n.includes('sense')) task='asr'
-      else if(n.includes('music') || n.includes('step') || n.includes('stable') || n.includes('heartmula') || n.includes('minimax')) task='music'
-      else if(n.includes('sep') || n.includes('roformer') || n.includes('demucs')) task='sep'
-      return { id, family: id, label, task, description:`HF folder ${f.folder} — from audio.cpp-gguf`, language:'auto', size:'?', runtime:'GGUF', hfFolder:f.folder, installed:false }
+      const family = resolveModelFamily(id, undefined, f.folder)
+      const task = resolveModelTask(id, family, undefined, f.folder)
+      return { id, family, label, task, description:`HF folder ${f.folder} — from audio.cpp-gguf`, language:'auto', size:'?', runtime:'GGUF', hfFolder:f.folder, installed:false }
     })
     // check installed for dynamic too
     const installedDirs = fs.existsSync(path.join(settings.dataRoot,'models')) ? new Set(fs.readdirSync(path.join(settings.dataRoot,'models'))) : new Set()
     dynamic.forEach((m:any)=>{
       const p = path.join(settings.dataRoot,'models', m.id)
-      m.installed = installedDirs.has(m.id) && fs.existsSync(p) && fs.readdirSync(p).length>0
-      if(m.installed) m.localPath = p
+      const res = resolveInstalledModel(settings.dataRoot, m.id)
+      m.installed = res.installed
+      if(m.installed) {
+        m.localPath = p
+        m.primaryGguf = res.primaryFileName || undefined
+        m.ggufFiles = res.files.map(f => path.basename(f))
+      }
     })
     // merge, dedup by id
     const all = [...base]
@@ -169,9 +169,35 @@ ipcMain.handle('models:getVariants', async (_e, id:string)=>{
 })
 ipcMain.handle('models:delete', async (_e, id:string) => {
   deleteModel(settings.dataRoot, id)
-  return scanInstalled(settings.dataRoot)
+  return scanInstalled(settings.dataRoot, settings.customModels)
 })
-ipcMain.handle('models:import', async (_e, id:string, sourcePath:string)=>{
+ipcMain.handle('models:updateCustom', async (_e, id:string, metadata:any)=>{
+  if (!settings.customModels) settings.customModels = {}
+  settings.customModels[id] = { ...(settings.customModels[id] || {}), ...metadata }
+  saveSettings(settings)
+  return scanInstalled(settings.dataRoot, settings.customModels)
+})
+ipcMain.handle('models:test', async (_e, id:string)=>{
+  const resolved = resolveInstalledModel(settings.dataRoot, id)
+  if (!resolved.installed || !resolved.ggufPath) {
+    throw new Error(`Model "${id}" is not installed or contains no .gguf files`)
+  }
+  const bin = settings.backendPath ? getBackendBin(settings.backendPath, 'cli') : null
+  if (!bin) throw new Error('No backend CLI installed — import or download backend in Settings')
+  const bPath = (settings.backendPath||'').toLowerCase()
+  const backendType = bPath.includes('cuda') ? 'cuda' : bPath.includes('hip')||bPath.includes('rocm') ? 'hip' : bPath.includes('vulkan') ? 'vulkan' : bPath.includes('metal') ? 'metal' : 'cpu'
+  const task = resolved.task === 'music' ? 'gen' : resolved.task
+  const args = ['--task', task, '--family', resolved.family, '--model', resolved.ggufPath]
+  if (backendType && backendType !== 'cpu') args.push('--backend', backendType)
+  args.push('--help')
+  try{
+    const r = await runCli(args, 12000)
+    return { ok: true, out: (r.out || r.err || 'Model validation succeeded').slice(0, 1000), resolved }
+  }catch(e:any){
+    return { ok: false, error: e.message, resolved }
+  }
+})
+ipcMain.handle('models:import', async (_e, id:string, sourcePath:string, taskOverride?:string, familyOverride?:string)=>{
   if(!sourcePath || !fs.existsSync(sourcePath)) throw new Error('Source not found: '+sourcePath)
   const destDir = getModelPath(settings.dataRoot, id)
   fs.mkdirSync(destDir,{recursive:true})
@@ -184,18 +210,29 @@ ipcMain.handle('models:import', async (_e, id:string, sourcePath:string)=>{
     if(n<4 || buf.toString('ascii')!=='GGUF') throw new Error(path.basename(p)+' is not a valid GGUF (bad header)')
   }
   if(stat.isDirectory()){
-    const files = fs.readdirSync(sourcePath).filter(f=> f.toLowerCase().endsWith('.gguf'))
+    const files = findAllGgufFiles(sourcePath)
     if(files.length===0) throw new Error('No .gguf found in folder')
     for(const f of files){
-      const src = path.join(sourcePath,f)
-      validateGguf(src)
-      fs.copyFileSync(src, path.join(destDir,f))
+      validateGguf(f)
+      const rel = path.relative(sourcePath, f)
+      const target = path.join(destDir, rel)
+      fs.mkdirSync(path.dirname(target), {recursive:true})
+      fs.copyFileSync(f, target)
     }
   } else {
     validateGguf(sourcePath)
     fs.copyFileSync(sourcePath, path.join(destDir, path.basename(sourcePath)))
   }
-  return scanInstalled(settings.dataRoot)
+  if (taskOverride || familyOverride) {
+    if (!settings.customModels) settings.customModels = {}
+    settings.customModels[id] = {
+      ...(settings.customModels[id] || {}),
+      task: taskOverride,
+      family: familyOverride,
+    }
+    saveSettings(settings)
+  }
+  return scanInstalled(settings.dataRoot, settings.customModels)
 })
 ipcMain.handle('models:download', async (e, id:string, url?:string) => {
   const dir = getModelPath(settings.dataRoot, id)
@@ -281,7 +318,16 @@ ipcMain.handle('models:downloadAll', async (e, id:string) => {
 
 ipcMain.handle('server:start', async (_e, models:any[]) => {
   if (!settings.backendPath) throw new Error('No backend — download from GitHub Releases or Import ZIP in Settings')
-  await startServer(settings.backendPath, settings.serverHost, settings.serverPort, models)
+  const preparedModels = (models || []).map(m => {
+    const resolved = resolveInstalledModel(settings.dataRoot, m.id)
+    return {
+      id: m.id,
+      family: resolved.family || m.family,
+      path: resolved.ggufPath || m.path || getModelPath(settings.dataRoot, m.id),
+      task: resolved.task === 'music' ? 'gen' : (resolved.task || m.task),
+    }
+  })
+  await startServer(settings.backendPath, settings.serverHost, settings.serverPort, preparedModels)
   return { ...getServerStatus(), host:settings.serverHost, port:settings.serverPort }
 })
 ipcMain.handle('server:stop', async ()=> { await stopServer(); return { ...getServerStatus(), host:settings.serverHost, port:settings.serverPort } })
@@ -296,6 +342,15 @@ async function ensureAutoServer(){
     await startServer(settings.backendPath, settings.serverHost, settings.serverPort, [])
     return isServerRunning()
   }catch(e){ console.log('auto-start failed', e); return false }
+}
+
+function getBackendAcceleration(): string {
+  const p = (settings.backendPath || '').toLowerCase()
+  if (p.includes('cuda')) return 'cuda'
+  if (p.includes('hip') || p.includes('rocm')) return 'hip'
+  if (p.includes('vulkan')) return 'vulkan'
+  if (p.includes('metal')) return 'metal'
+  return 'cpu'
 }
 
 // Helpers for voice WAV validation
@@ -362,9 +417,10 @@ async function runCli(args:string[], timeout=120000): Promise<{out:string, err:s
 }
 
 ipcMain.handle('gen:tts', async (_e, opts:any) => {
-  const modelsDir = getModelsDir(settings.dataRoot)
-  const modelPath = path.join(modelsDir, opts.modelId)
-  if (!fs.existsSync(modelPath)) throw new Error('Model not installed: '+opts.modelId)
+  const resolved = resolveInstalledModel(settings.dataRoot, opts.modelId)
+  if (!resolved.installed || !resolved.ggufPath) {
+    throw new Error(`TTS model "${opts.modelId}" is not installed or has no .gguf files. Download it in Models tab.`)
+  }
   const outDir = path.join(settings.dataRoot,'outputs')
   fs.mkdirSync(outDir,{recursive:true})
   const outFile = opts.outFile || path.join(outDir, `tts_${Date.now()}.wav`)
@@ -387,7 +443,6 @@ ipcMain.handle('gen:tts', async (_e, opts:any) => {
   // fallback CLI — if binary missing we fake success for demo
   const bin = settings.backendPath ? getBackendBin(settings.backendPath,'cli') : null
   if (!bin){
-    // demo: write a 1sec silent wav placeholder? For now create empty file
     fs.writeFileSync(outFile+'.txt', `DEMO TTS output for "${opts.text.slice(0,60)}" model=${opts.modelId}`)
     return { outFile: outFile+'.txt', via:'demo (no backend)', note:'Install backend to generate real audio' }
   }
@@ -406,7 +461,10 @@ ipcMain.handle('gen:tts', async (_e, opts:any) => {
       }
     }
   }
-  const args = ['--task','tts','--family', opts.family||opts.modelId, '--model', modelPath, '--text', opts.text, '--out', outFile]
+  const family = resolveModelFamily(opts.modelId, opts.family || resolved.family, resolved.ggufPath)
+  const backendAcc = getBackendAcceleration()
+  const args = ['--task','tts','--family', family, '--model', resolved.ggufPath, '--text', opts.text, '--out', outFile]
+  if (backendAcc && backendAcc !== 'cpu') args.push('--backend', backendAcc)
   if (voiceRefToUse) args.push('--voice-ref', voiceRefToUse)
   if (opts.referenceText) args.push('--reference-text', opts.referenceText)
   if (opts.voiceId) args.push('--voice-id', opts.voiceId)
@@ -430,30 +488,85 @@ ipcMain.handle('gen:tts', async (_e, opts:any) => {
 })
 
 ipcMain.handle('gen:music', async (_e, opts:any)=>{
-  const modelPath = path.join(getModelsDir(settings.dataRoot), opts.modelId)
-  if (!fs.existsSync(modelPath)) throw new Error('Model not installed')
+  const resolved = resolveInstalledModel(settings.dataRoot, opts.modelId)
+  if (!resolved.installed || !resolved.ggufPath) {
+    throw new Error(`Music model "${opts.modelId}" is not installed or contains no .gguf files. Please download it via Models tab or Import GGUF.`)
+  }
   const outDir = path.join(settings.dataRoot,'outputs')
   fs.mkdirSync(outDir,{recursive:true})
   const outFile = path.join(outDir, `music_${Date.now()}.wav`)
+
+  const family = resolveModelFamily(opts.modelId, opts.family || resolved.family, resolved.ggufPath)
+  const task = 'gen'
+  const modelPath = resolved.ggufPath
+
   if(settings.autoStartServer && !isServerRunning()){
     try{ await ensureAutoServer() }catch{}
   }
+
+  // 1. Try server mode if running
+  if (isServerRunning()){
+    try{
+      const res = await fetch(`http://${settings.serverHost}:${settings.serverPort}/v1/tasks/run`,{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          task: 'gen',
+          model: opts.modelId,
+          text: opts.prompt,
+          options: {
+            lyrics: opts.lyrics || undefined,
+            duration: opts.duration ? parseInt(opts.duration, 10) : 30
+          }
+        })
+      })
+      if (res.ok){
+        const contentType = res.headers.get('content-type') || ''
+        if (contentType.includes('audio') || contentType.includes('octet-stream')) {
+          const buf = Buffer.from(await res.arrayBuffer())
+          fs.writeFileSync(outFile, buf)
+          return { outFile, via:'server', status:res.status }
+        }
+      }
+    }catch{}
+  }
+
+  // 2. CLI Execution
   const bin = settings.backendPath ? getBackendBin(settings.backendPath,'cli') : null
   if (!bin){
     fs.writeFileSync(outFile+'.txt', `DEMO MUSIC prompt="${opts.prompt}" lyrics="${(opts.lyrics||'').slice(0,80)}"`)
-    return { outFile: outFile+'.txt', via:'demo' }
+    return { outFile: outFile+'.txt', via:'demo (no backend)', note:'Install backend to generate real audio' }
   }
-  const args = ['--task','gen','--family', opts.family||opts.modelId, '--model', modelPath, '--text', opts.prompt, '--out', outFile]
-  if (opts.lyrics) args.push('--request-option', `lyrics=${opts.lyrics}`)
-  if (opts.duration) args.push('--request-option', `duration=${opts.duration}`)
-  const r = await runCli(args, 300000)
-  if (!fs.existsSync(outFile)) throw new Error('CLI failed: '+r.err.slice(0,500))
+
+  const backendAcc = getBackendAcceleration()
+  const args = ['--task', task, '--family', family, '--model', modelPath, '--text', opts.prompt, '--out', outFile]
+  if (backendAcc && backendAcc !== 'cpu') {
+    args.push('--backend', backendAcc)
+  }
+  if (opts.lyrics && opts.lyrics.trim()) {
+    args.push('--request-option', `lyrics=${opts.lyrics.trim()}`)
+  }
+  if (opts.duration) {
+    args.push('--request-option', `duration=${opts.duration}`)
+  }
+
+  const r = await runCli(args, 360000)
+  if (!fs.existsSync(outFile)){
+    const errText = (r.err || r.out || '').slice(0, 1000)
+    let hint = ''
+    if (errText.toLowerCase().includes('unknown family')) {
+      hint = `\n\nFamily "${family}" was rejected by the backend. Supported families include: ace_step, stable_audio, minimax_music3, heartmula.`
+    }
+    throw new Error(`Music CLI generation failed (exit ${r.code ?? '?'}).\n${errText}${hint}`)
+  }
   return { outFile, via:'cli', log:r.err.slice(0,800) }
 })
 
 ipcMain.handle('gen:asr', async (_e, opts:any)=>{
-  const modelPath = path.join(getModelsDir(settings.dataRoot), opts.modelId)
-  if (!fs.existsSync(modelPath)) throw new Error('Model not installed')
+  const resolved = resolveInstalledModel(settings.dataRoot, opts.modelId)
+  if (!resolved.installed || !resolved.ggufPath) {
+    throw new Error(`ASR model "${opts.modelId}" is not installed or contains no .gguf files. Download it via Models tab.`)
+  }
   if (!opts.audioPath || !fs.existsSync(opts.audioPath)) throw new Error('Audio file not found')
   if(settings.autoStartServer && !isServerRunning()){
     try{ await ensureAutoServer() }catch{}
@@ -476,7 +589,10 @@ ipcMain.handle('gen:asr', async (_e, opts:any)=>{
   if (!bin){
     return { text: `[DEMO] Transcription of ${path.basename(opts.audioPath)} — install backend for real ASR.`, via:'demo' }
   }
-  const args = ['--task','asr','--family', opts.family||opts.modelId, '--model', modelPath, '--audio', opts.audioPath]
+  const family = resolveModelFamily(opts.modelId, opts.family || resolved.family, resolved.ggufPath)
+  const backendAcc = getBackendAcceleration()
+  const args = ['--task','asr','--family', family, '--model', resolved.ggufPath, '--audio', opts.audioPath]
+  if (backendAcc && backendAcc !== 'cpu') args.push('--backend', backendAcc)
   const r = await runCli(args)
   return { text: (r.out||r.err).slice(0,4000) || ' (no output)', via:'cli' }
 })
