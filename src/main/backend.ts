@@ -180,8 +180,10 @@ export function deleteBackend(dataRoot:string, version:string){
 export async function repairBackend(dataRoot:string, onProgress?:(pct:number, dl:number, total:number)=>void): Promise<{backendPath:string, version:string, repaired:boolean, details:string}>{
   const root = path.join(dataRoot,'backend')
   const current = path.join(root,'current')
-  const versionFile = path.join(root,'..','..','..','..','..') // dummy
-  // Determine current version from settings or from folder
+  if(!fs.existsSync(current)){
+    throw new Error('No backend folder installed yet. Go to Settings → Fetch releases and download a backend ZIP.')
+  }
+
   let currentVersion: string | null = null
   try{
     const settingsPath = path.join(require('electron').app.getPath('userData'), 'settings.json')
@@ -191,11 +193,9 @@ export async function repairBackend(dataRoot:string, onProgress?:(pct:number, dl
     }
   }catch{}
   if(!currentVersion){
-    // fallback: try to read VERSION file in current
     try{ currentVersion = fs.readFileSync(path.join(current,'VERSION'),'utf-8').trim() }catch{}
   }
   if(!currentVersion){
-    // fallback: use folder name of current's source if we can infer
     currentVersion = 'current'
   }
 
@@ -205,6 +205,17 @@ export async function repairBackend(dataRoot:string, onProgress?:(pct:number, dl
     const p = path.join(current, f)
     if(!fs.existsSync(p) || fs.statSync(p).size===0) missing.push(f)
   }
+
+  // If CUDA backend is present, check for CUDA runtime DLLs
+  const hasCudaGgml = fs.existsSync(path.join(current, 'ggml-cuda.dll'))
+  if (hasCudaGgml) {
+    const cudaRequired = ['cudart64_12.dll', 'cublas64_12.dll', 'cufft64_11.dll']
+    for (const f of cudaRequired) {
+      const p = path.join(current, f)
+      if (!fs.existsSync(p)) missing.push(f)
+    }
+  }
+
   // also check for corrupt (size < 1KB for exe is suspicious)
   for(const f of ['audiocpp_cli.exe','audiocpp_server.exe']){
     const p = path.join(current, f)
@@ -215,34 +226,49 @@ export async function repairBackend(dataRoot:string, onProgress?:(pct:number, dl
   }
 
   if(missing.length===0){
-    return {backendPath: current, version: currentVersion||'current', repaired:false, details:'No missing files detected — backend looks healthy. Files: '+ required.join(', ')}
+    return {backendPath: current, version: currentVersion||'current', repaired:false, details:'No missing files detected — backend looks healthy.'}
   }
 
-  let details = `Missing/corrupt: ${missing.join(', ')}. `
+  let details = `Missing: ${missing.join(', ')}. `
+
+  // If only CUDA DLLs are missing, fetch cudart zip from GitHub
+  if (hasCudaGgml && missing.every(m => m.includes('cuda') || m.includes('cublas') || m.includes('cufft'))) {
+    try {
+      const releases = await fetchGithubReleases(10)
+      for (const rel of releases) {
+        const cudartAsset = rel.zipAssets.find(a => /cudart.*cuda12\.4|cuda-runtime/i.test(a.name))
+        if (cudartAsset) {
+          const tmpDir = path.join(root, '_downloads')
+          fs.mkdirSync(tmpDir, { recursive: true })
+          const cudartZip = path.join(tmpDir, cudartAsset.name)
+          if (!fs.existsSync(cudartZip)) {
+            await downloadFile(cudartAsset.url, cudartZip, onProgress)
+          }
+          const zip = new AdmZip(cudartZip)
+          zip.extractAllTo(current, true)
+          return {
+            backendPath: current,
+            version: currentVersion || 'current',
+            repaired: true,
+            details: details + `Successfully downloaded and extracted CUDA 12 runtime (${cudartAsset.name}).`
+          }
+        }
+      }
+    } catch (e: any) {
+      details += `CUDA runtime auto-download failed: ${e.message}. `
+    }
+  }
+
   // Try to find ZIP in _downloads
   const dlDir = path.join(root,'_downloads')
   let zipCandidate: string | null = null
   if(fs.existsSync(dlDir)){
     const zips = fs.readdirSync(dlDir).filter(f=> f.endsWith('.zip'))
-    // prefer one containing currentVersion
     if(currentVersion){
       zipCandidate = zips.find(z=> z.includes(currentVersion)) || null
     }
     if(!zipCandidate && zips.length>0) zipCandidate = zips[0]
     if(zipCandidate) zipCandidate = path.join(dlDir, zipCandidate)
-  }
-  // If version folder exists and is healthy, just recopy it
-  const versionFolder = currentVersion ? path.join(root, currentVersion) : null
-  if(versionFolder && fs.existsSync(versionFolder)){
-    const verInfo = detectBackend(versionFolder)
-    if(verInfo.hasCli && verInfo.hasServer){
-      // recopy from version folder
-      try{
-        if(fs.existsSync(current)) fs.rmSync(current,{recursive:true,force:true})
-        fs.cpSync(versionFolder, current, {recursive:true})
-        return {backendPath: current, version: currentVersion||'current', repaired:true, details: details + `Repaired by recopying from version folder ${currentVersion}.`}
-      }catch(e:any){ details += `Recopy failed: ${e.message}. ` }
-    }
   }
 
   if(zipCandidate && fs.existsSync(zipCandidate)){
@@ -252,14 +278,13 @@ export async function repairBackend(dataRoot:string, onProgress?:(pct:number, dl
     }catch(e:any){ details += `Re-extract failed: ${e.message}. ` }
   }
 
-  // Fallback: try GitHub re-download if version looks like a release tag
+  // Fallback: try GitHub re-download
   if(currentVersion){
     try{
       const releases = await fetchGithubReleases(12)
       for(const rel of releases){
         for(const asset of rel.zipAssets){
           if(asset.name.includes(currentVersion) || currentVersion.includes(rel.tag)){
-            // found matching asset, re-download
             const dlRes = await downloadBackendFromUrl(asset.url, dataRoot, onProgress)
             return {backendPath: dlRes.backendPath, version: dlRes.version, repaired:true, details: details + `Re-downloaded from GitHub ${asset.name} (${rel.tag}).`}
           }
@@ -268,8 +293,7 @@ export async function repairBackend(dataRoot:string, onProgress?:(pct:number, dl
     }catch(e:any){ details += `GitHub fetch failed: ${e.message}. ` }
   }
 
-  // Last resort: just report missing
-  throw new Error(details + 'No repair source found. Try manually re-downloading a backend ZIP via Settings → Fetch releases → pick CPU ZIP, or Import ZIP.')
+  throw new Error(details + 'No repair source found. Try downloading Vulkan or CPU backend ZIP via Settings.')
 }
 
 export function runCliHelp(backendPath:string): Promise<string> {
@@ -301,8 +325,14 @@ export async function testBackend(backendPath:string): Promise<{cli:{ok:boolean,
   let hint=''
   const dllCode = 3221225781
   if(cli.code===dllCode || server.code===dllCode){
-    const hasVCRuntime = fs.existsSync('C:\\Windows\\System32\\vcruntime140.dll')
-    hint = hasVCRuntime ? 'DLL missing is likely CUDA (cudart) — you downloaded CUDA build but have no NVIDIA/CUDA. Pick CPU ZIP.' : 'vcruntime140.dll missing — install VC++ Redist https://aka.ms/vs/17/release/vc_redist.x64.exe'
+    const hasCudaGgml = fs.existsSync(path.join(backendPath, 'ggml-cuda.dll'))
+    const hasCudart = fs.existsSync(path.join(backendPath, 'cudart64_12.dll'))
+    if (hasCudaGgml && !hasCudart) {
+      hint = 'CUDA runtime DLLs (cudart64_12.dll / cublas64_12.dll) are missing. Click "Repair backend" in Settings to auto-install CUDA runtime, or switch to Vulkan.'
+    } else {
+      const hasVCRuntime = fs.existsSync('C:\\Windows\\System32\\vcruntime140.dll')
+      hint = hasVCRuntime ? 'DLL missing is likely CUDA (cudart) or missing NVIDIA driver. Use "Repair backend" or pick Vulkan / CPU.' : 'vcruntime140.dll missing — install VC++ Redist https://aka.ms/vs/17/release/vc_redist.x64.exe'
+    }
   }
   return {cli, server, hint}
 }
@@ -354,17 +384,12 @@ export function fetchGithubReleases(limit=8): Promise<GithubRelease[]>{
   })
 }
 
-export function downloadBackendFromUrl(url:string, dataRoot:string, onProgress?:(pct:number, dl:number, total:number)=>void): Promise<{backendPath:string, version:string, zipPath:string}>{
+function downloadFile(url:string, dest:string, onProgress?:(pct:number, dl:number, total:number)=>void): Promise<void>{
   return new Promise((resolve,reject)=>{
     const https = require('https')
     const http = require('http')
-    const tmpDir = path.join(dataRoot,'backend','_downloads')
-    fs.mkdirSync(tmpDir,{recursive:true})
-    const fileName = path.basename(new URL(url).pathname) || `backend_${Date.now()}.zip`
-    const zipPath = path.join(tmpDir, fileName)
-    const file = fs.createWriteStream(zipPath)
+    const file = fs.createWriteStream(dest)
     const client = url.startsWith('https') ? https : http
-    // follow redirects manually
     const doGet = (u:string)=>{
       client.get(u, (res:any)=>{
         if(res.statusCode>=300 && res.statusCode<400 && res.headers.location){
@@ -377,17 +402,41 @@ export function downloadBackendFromUrl(url:string, dataRoot:string, onProgress?:
         let dl=0
         res.on('data',(c:Buffer)=>{ dl+=c.length; if(total && onProgress) onProgress(Math.round(dl/total*100), dl, total)})
         res.pipe(file)
-        file.on('finish', async ()=>{
-          file.close(async ()=>{
-            try{
-              const r = await importBackendFromZip(zipPath, dataRoot)
-              resolve({backendPath:r.backendPath, version:r.version, zipPath})
-            }catch(e){ reject(e)}
-          })
-        })
-        file.on('error',reject)
+        file.on('finish', ()=> file.close(()=> resolve()))
+        file.on('error', reject)
       }).on('error',reject)
     }
     doGet(url)
   })
+}
+
+export async function downloadBackendFromUrl(url:string, dataRoot:string, onProgress?:(pct:number, dl:number, total:number)=>void): Promise<{backendPath:string, version:string, zipPath:string}>{
+  const tmpDir = path.join(dataRoot,'backend','_downloads')
+  fs.mkdirSync(tmpDir,{recursive:true})
+  const fileName = path.basename(new URL(url).pathname) || `backend_${Date.now()}.zip`
+  const zipPath = path.join(tmpDir, fileName)
+
+  await downloadFile(url, zipPath, onProgress)
+  const r = await importBackendFromZip(zipPath, dataRoot)
+
+  // If this is a CUDA backend zip, also auto-download companion cudart runtime if needed
+  if (/cuda/i.test(fileName)) {
+    try {
+      const releases = await fetchGithubReleases(10)
+      for (const rel of releases) {
+        const cudartAsset = rel.zipAssets.find(a => /cudart.*cuda12\.4|cuda-runtime/i.test(a.name))
+        if (cudartAsset) {
+          const cudartZip = path.join(tmpDir, cudartAsset.name)
+          if (!fs.existsSync(cudartZip)) {
+            await downloadFile(cudartAsset.url, cudartZip)
+          }
+          const zip = new AdmZip(cudartZip)
+          zip.extractAllTo(r.backendPath, true)
+          break
+        }
+      }
+    } catch {}
+  }
+
+  return { backendPath: r.backendPath, version: r.version, zipPath }
 }
