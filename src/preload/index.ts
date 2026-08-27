@@ -44,6 +44,7 @@ contextBridge.exposeInMainWorld('api', {
   stopServer: () => ipcRenderer.invoke('server:stop'),
   serverStatus: () => ipcRenderer.invoke('server:status'),
   serverLog: () => ipcRenderer.invoke('server:log'),
+  openWebUi: () => ipcRenderer.invoke('server:openWebUi'),
 
   // generation (via CLI fallback / server)
   tts: (opts:any) => ipcRenderer.invoke('gen:tts', opts),

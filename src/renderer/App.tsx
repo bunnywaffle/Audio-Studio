@@ -15,10 +15,23 @@ export default function App(){
   return (
     <div className="app">
       <div className="topbar">
-        <div className="brand"><div className="logo">◉</div><div>audio.cpp Studio<br/><small>DARK • SLEEK • LOCAL</small></div><span className="badge">v0.1 • ggml</span></div>
+        <div className="brand"><div className="logo">◉</div><div>audio.cpp Studio<br/><small>DARK • SLEEK • LOCAL</small></div><span className="badge">v0.2 • ggml</span></div>
         <span className={`pill ${backend?.hasCli?'live':''}`}>{backend?.hasCli?'● Backend ready':'○ Backend missing'}</span>
         <span className={`pill ${server?.running?'live':''}`}>{server?.running?`● :${server.port}`:'○ Server off'}</span>
         <div className="right">
+          <button
+            className="btn ghost"
+            style={{display:'inline-flex', alignItems:'center', gap:5, padding:'5px 9px', fontSize:12}}
+            title="Launch audio.cpp native WebUI in your default browser"
+            onClick={async()=>{
+              try {
+                await window.api.openWebUi()
+                const st=await window.api.serverStatus(); setServer(st)
+              } catch(e:any){ alert(e.message) }
+            }}
+          >
+            <span style={{fontSize:13}}>🌐</span> WebUI ↗
+          </button>
           <button className="btn ghost" onClick={async()=>{const s=await window.api.getBackendInfo(); setBackend(s); const st=await window.api.serverStatus(); setServer(st)}}>↻ Refresh</button>
           <button className="btn" onClick={()=> setTab('settings')}>⚙ Settings</button>
         </div>
@@ -964,6 +977,20 @@ function SettingsView({settings,setSettings,backend,setBackend,server,setServer}
             try{ const st=await window.api.startServer([]); setServer(st)}catch(e:any){ alert(e.message + '\n\nTip: If code 3221225781, see hint above — likely missing VC++ or CUDA. Use Test backend →') }
           }}>▶ Start</button>
           <button className="btn ghost" onClick={async()=>{ const st=await window.api.stopServer(); setServer(st)}}>■ Stop</button>
+          <button
+            className="btn ghost"
+            disabled={!backend?.hasServer}
+            title="Launch audio.cpp WebUI in your default browser"
+            onClick={async()=>{
+              try{
+                await window.api.openWebUi()
+                const st=await window.api.serverStatus()
+                setServer(st)
+              } catch(e:any){ alert(e.message) }
+            }}
+          >
+            🌐 Open WebUI ↗
+          </button>
           <button className="btn" onClick={async()=>{
             try{
               const r=await window.api.testBackend()

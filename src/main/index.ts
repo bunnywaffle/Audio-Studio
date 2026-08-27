@@ -333,6 +333,27 @@ ipcMain.handle('server:start', async (_e, models:any[]) => {
 ipcMain.handle('server:stop', async ()=> { await stopServer(); return { ...getServerStatus(), host:settings.serverHost, port:settings.serverPort } })
 ipcMain.handle('server:status', async ()=> ({ ...getServerStatus(), host:settings.serverHost, port:settings.serverPort }))
 ipcMain.handle('server:log', async ()=> getServerStatus())
+ipcMain.handle('server:openWebUi', async () => {
+  if (!settings.backendPath) {
+    throw new Error('No backend installed — download or import a backend in Settings.')
+  }
+  if (!isServerRunning()) {
+    const installed = scanInstalled(settings.dataRoot)
+    const preparedModels = (installed || []).filter(m => m.installed).map(m => {
+      const resolved = resolveInstalledModel(settings.dataRoot, m.id)
+      return {
+        id: m.id,
+        family: resolved.family || m.family,
+        path: resolved.ggufPath || m.localPath || getModelPath(settings.dataRoot, m.id),
+        task: resolved.task === 'music' ? 'gen' : (resolved.task || m.task),
+      }
+    })
+    await startServer(settings.backendPath, settings.serverHost, settings.serverPort, preparedModels)
+  }
+  const url = `http://${settings.serverHost}:${settings.serverPort}`
+  await shell.openExternal(url)
+  return { url, ok: true }
+})
 
 async function ensureAutoServer(){
   if(!settings.autoStartServer) return false
