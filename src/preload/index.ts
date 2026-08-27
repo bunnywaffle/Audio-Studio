@@ -49,6 +49,12 @@ contextBridge.exposeInMainWorld('api', {
   tts: (opts:any) => ipcRenderer.invoke('gen:tts', opts),
   music: (opts:any) => ipcRenderer.invoke('gen:music', opts),
   asr: (opts:any) => ipcRenderer.invoke('gen:asr', opts),
+  cancelGen: () => ipcRenderer.invoke('gen:cancel'),
+  onGenProgress: (cb:(data:any)=>void) => {
+    const handler = (_:any, data:any) => cb(data)
+    ipcRenderer.on('gen:progress', handler)
+    return () => ipcRenderer.removeListener('gen:progress', handler)
+  },
 
   // utils
   listOutputs: () => ipcRenderer.invoke('outputs:list'),

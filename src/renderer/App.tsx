@@ -319,14 +319,26 @@ function Music(){
   const [prompt,setPrompt]=useState('lofi hip hop, warm Rhodes, gentle drums, cozy night')
   const [lyrics,setLyrics]=useState('')
   const [duration,setDuration]=useState('30')
+  const [steps,setSteps]=useState('16')
+  const [timeoutSec,setTimeoutSec]=useState('900')
   const [customFamily,setCustomFamily]=useState('')
   const [showOptions,setShowOptions]=useState(false)
   const [busy,setBusy]=useState(false)
+  const [liveLog,setLiveLog]=useState('')
   const [result,setResult]=useState<any>(null)
 
   useEffect(()=>{
     if(!modelId && defaultList[0]) setModelId(defaultList[0].id)
   },[models])
+
+  useEffect(()=>{
+    const off = window.api.onGenProgress?.((d:any)=>{
+      if(d && d.text){
+        setLiveLog(prev => (prev + d.text).slice(-2000))
+      }
+    })
+    return ()=> off && off()
+  },[])
 
   const selectedModel = models.find((m:any)=> m.id===modelId)
 
@@ -350,27 +362,53 @@ function Music(){
             <span className="tag">Task: {selectedModel.task.toUpperCase()}</span>
             {selectedModel.primaryGguf && <span className="kbd">{selectedModel.primaryGguf}</span>}
             <button className="btn ghost" style={{padding:'2px 6px', fontSize:10, marginLeft:'auto'}} onClick={()=> setShowOptions(!showOptions)}>
-              {showOptions ? 'Hide options' : '⚙ Advanced options'}
+              {showOptions ? 'Hide options' : '⚙ Performance & Steps'}
             </button>
           </div>
         )}
 
+        <div className="grid2" style={{marginTop:12}}>
+          <div>
+            <label className="small" style={{fontWeight:700}}>Duration</label>
+            <select className="select" value={duration} onChange={e=> setDuration(e.target.value)}>
+              <option value="15">15 seconds (fast preview)</option>
+              <option value="30">30 seconds (standard)</option>
+              <option value="60">60 seconds (1 minute)</option>
+              <option value="120">120 seconds (2 minutes)</option>
+            </select>
+          </div>
+          <div>
+            <label className="small" style={{fontWeight:700}}>Inference Steps (Speed vs Quality)</label>
+            <select className="select" value={steps} onChange={e=> setSteps(e.target.value)}>
+              <option value="8">8 steps (Ultra Fast / Turbo)</option>
+              <option value="12">12 steps (Fast preview)</option>
+              <option value="16">16 steps (Recommended for Turbo)</option>
+              <option value="25">25 steps (Balanced quality)</option>
+              <option value="40">40 steps (High quality)</option>
+              <option value="50">50 steps (Maximum detail)</option>
+            </select>
+          </div>
+        </div>
+
         {showOptions && (
           <div style={{marginTop:10, padding:10, background:'var(--panel2)', border:'1px solid var(--border)', borderRadius:8}}>
-            <label className="small" style={{fontWeight:700}}>Override Model Family (e.g. ace_step, stable_audio, minimax_music3, heartmula)</label>
-            <input className="input mono" placeholder={selectedModel?.family || 'ace_step'} value={customFamily} onChange={e=> setCustomFamily(e.target.value)} style={{marginTop:4, fontSize:12}} />
+            <div className="grid2">
+              <div>
+                <label className="small" style={{fontWeight:700}}>Override Family (e.g. ace_step, stable_audio, minimax_music3)</label>
+                <input className="input mono" placeholder={selectedModel?.family || 'ace_step'} value={customFamily} onChange={e=> setCustomFamily(e.target.value)} style={{marginTop:4, fontSize:12}} />
+              </div>
+              <div>
+                <label className="small" style={{fontWeight:700}}>Timeout Limit</label>
+                <select className="select" value={timeoutSec} onChange={e=> setTimeoutSec(e.target.value)} style={{marginTop:4}}>
+                  <option value="300">5 minutes</option>
+                  <option value="600">10 minutes</option>
+                  <option value="900">15 minutes (Default)</option>
+                  <option value="1800">30 minutes (Large CPU jobs)</option>
+                </select>
+              </div>
+            </div>
           </div>
         )}
-
-        <div style={{marginTop:12}}>
-          <label className="small" style={{fontWeight:700}}>Duration</label>
-          <select className="select" value={duration} onChange={e=> setDuration(e.target.value)}>
-            <option value="15">15 seconds</option>
-            <option value="30">30 seconds (standard)</option>
-            <option value="60">60 seconds (1 minute)</option>
-            <option value="120">120 seconds (2 minutes)</option>
-          </select>
-        </div>
 
         <div style={{marginTop:12}}>
           <label className="small" style={{fontWeight:700}}>Prompt (Music style, instruments, mood)</label>
@@ -379,19 +417,30 @@ function Music(){
 
         <div style={{marginTop:12}}>
           <label className="small" style={{fontWeight:700}}>Lyrics <span style={{fontWeight:400, color:'var(--muted)'}}>(optional — for models supporting singing/lyrics)</span></label>
-          <textarea className="textarea" style={{minHeight:80}} value={lyrics} onChange={e=> setLyrics(e.target.value)} placeholder="[Verse 1]&#10;Night falls over the city glow...&#10;&#10;[Chorus]&#10;We run under the starlight..." />
+          <textarea className="textarea" style={{minHeight:70}} value={lyrics} onChange={e=> setLyrics(e.target.value)} placeholder="[Verse 1]&#10;Night falls over the city glow...&#10;&#10;[Chorus]&#10;We run under the starlight..." />
         </div>
 
-        <div className="row" style={{marginTop:14, justifyContent:'end'}}>
+        <div className="row" style={{marginTop:14, justifyContent:'space-between', alignItems:'center'}}>
+          {busy ? (
+            <button className="btn ghost" style={{color:'#F87171', borderColor:'rgba(248,113,113,0.3)'}} onClick={async()=>{
+              try { await window.api.cancelGen?.() } catch {}
+              setBusy(false)
+            }}>
+              ✕ Cancel Generation
+            </button>
+          ) : <div/>}
+
           <button className="btn primary" disabled={busy || !modelId || !prompt.trim()} onClick={async()=>{
-            setBusy(true); setResult(null);
+            setBusy(true); setResult(null); setLiveLog('Starting engine inference...\n');
             try{
               const r = await window.api.music({
                 modelId,
                 family: customFamily || selectedModel?.family,
                 prompt,
                 lyrics,
-                duration
+                duration,
+                steps,
+                timeout: timeoutSec
               })
               setResult(r)
             } catch(e:any){
@@ -403,12 +452,24 @@ function Music(){
           </button>
         </div>
 
+        {busy && (
+          <div style={{marginTop:12, padding:10, background:'var(--bg)', border:'1px solid var(--border)', borderRadius:8}}>
+            <div className="row" style={{justifyContent:'space-between', marginBottom:6}}>
+              <span className="small mono" style={{fontWeight:700}}>Live Engine Output</span>
+              <span className="tag">Running ({steps} steps)</span>
+            </div>
+            <pre className="mono small" style={{maxHeight:120, overflow:'auto', whiteSpace:'pre-wrap', margin:0, color:'var(--muted)'}}>
+              {liveLog || 'Awaiting output from audiocpp_cli...'}
+            </pre>
+          </div>
+        )}
+
         {result && (
           <div style={{marginTop:12, padding:12, background:'var(--panel2)', border:'1px solid var(--border)', borderRadius:10}}>
             {result.error ? (
               <div style={{color:'#F87171', whiteSpace:'pre-wrap', lineHeight:1.5}}>
                 <b>Generation error:</b>
-                <div style={{marginTop:4, fontSize:12}}>{result.error}</div>
+                <div style={{marginTop:4, fontSize:12, background:'var(--bg)', padding:10, borderRadius:8, border:'1px solid rgba(248,113,113,0.2)'}}>{result.error}</div>
               </div>
             ) : (
               <>

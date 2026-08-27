@@ -401,18 +401,74 @@ async function ensureWavVoiceFile(inputPath:string): Promise<string>{
   return tmpOut
 }
 
-// Generation via CLI (fallback) — spawns audiocpp_cli
-async function runCli(args:string[], timeout=120000): Promise<{out:string, err:string, code:number|null}>{
-  const bin = settings.backendPath ? getBackendBin(settings.backendPath,'cli') : null
+// Active CLI process tracking for cancellation
+let activeCliProcess: cp.ChildProcess | null = null
+
+ipcMain.handle('gen:cancel', async () => {
+  if (activeCliProcess) {
+    try {
+      activeCliProcess.kill()
+      activeCliProcess = null
+      return { ok: true, message: 'Generation cancelled' }
+    } catch (e: any) {
+      return { ok: false, error: e.message }
+    }
+  }
+  return { ok: false, message: 'No active generation process' }
+})
+
+// Generation via CLI (fallback) — spawns audiocpp_cli with live streaming & diagnostics
+async function runCli(
+  args: string[],
+  timeout = 300000,
+  onProgress?: (text: string) => void
+): Promise<{ out: string; err: string; code: number | null }> {
+  const bin = settings.backendPath ? getBackendBin(settings.backendPath, 'cli') : null
   if (!bin) throw new Error('Backend CLI not found — import a backend zip in Settings')
-  return await new Promise((resolve,reject)=>{
+
+  return await new Promise((resolve, reject) => {
     const p = cp.spawn(bin!, args, { cwd: settings.dataRoot })
-    let out='', err=''
-    p.stdout?.on('data', d=> out+=d.toString())
-    p.stderr?.on('data', d=> err+=d.toString())
-    const t = setTimeout(()=> { p.kill(); reject(new Error('CLI timeout')) }, timeout)
-    p.on('close', code=> { clearTimeout(t); resolve({out,err,code}) })
-    p.on('error', reject)
+    activeCliProcess = p
+    let out = '', err = ''
+
+    p.stdout?.on('data', d => {
+      const chunk = d.toString()
+      out += chunk
+      if (onProgress) onProgress(chunk)
+    })
+
+    p.stderr?.on('data', d => {
+      const chunk = d.toString()
+      err += chunk
+      if (onProgress) onProgress(chunk)
+    })
+
+    const t = setTimeout(() => {
+      try { p.kill() } catch {}
+      if (activeCliProcess === p) activeCliProcess = null
+      const combined = (err + '\n' + out).trim()
+      const lastLogs = combined ? combined.slice(-1500) : '(No engine logs recorded)'
+      reject(new Error(
+        `CLI timeout: Engine did not finish within ${Math.round(timeout / 1000)} seconds.\n\n` +
+        `Last engine logs:\n${lastLogs}\n\n` +
+        `Tips to fix:\n` +
+        `• On CPU, diffusion music generation takes longer. In the Music tab, reduce Steps to 8 or 16.\n` +
+        `• Set Duration to 15s or 30s.\n` +
+        `• In Settings, ensure CUDA or Vulkan acceleration is selected if your PC has a dedicated GPU.`
+      ))
+    }, timeout)
+
+    p.on('close', code => {
+      clearTimeout(t)
+      if (activeCliProcess === p) activeCliProcess = null
+      resolve({ out, err, code })
+    })
+
+    p.on('error', error => {
+      clearTimeout(t)
+      if (activeCliProcess === p) activeCliProcess = null
+      reject(error)
+    })
   })
 }
 
@@ -469,7 +525,12 @@ ipcMain.handle('gen:tts', async (_e, opts:any) => {
   if (opts.referenceText) args.push('--reference-text', opts.referenceText)
   if (opts.voiceId) args.push('--voice-id', opts.voiceId)
   if (opts.language) args.push('--load-option', `language=${opts.language}`)
-  const r = await runCli(args)
+  
+  const onProgress = (chunk: string) => {
+    try { _e.sender.send('gen:progress', { type: 'tts', text: chunk }) } catch {}
+  }
+
+  const r = await runCli(args, 300000, onProgress)
   if (!fs.existsSync(outFile)){
     const errLower = (r.err + r.out).toLowerCase()
     if(errLower.includes('reference text') || errLower.includes('icl mode requires')){
@@ -516,7 +577,8 @@ ipcMain.handle('gen:music', async (_e, opts:any)=>{
           text: opts.prompt,
           options: {
             lyrics: opts.lyrics || undefined,
-            duration: opts.duration ? parseInt(opts.duration, 10) : 30
+            duration: opts.duration ? parseInt(opts.duration, 10) : 30,
+            num_inference_steps: opts.steps ? parseInt(opts.steps, 10) : undefined
           }
         })
       })
@@ -548,11 +610,26 @@ ipcMain.handle('gen:music', async (_e, opts:any)=>{
   }
   if (opts.duration) {
     args.push('--request-option', `duration=${opts.duration}`)
+    args.push('--request-option', `duration_sec=${opts.duration}`)
+  }
+  
+  // Default steps: Turbo models only need 8-16 steps; standard models use 25
+  const isTurbo = opts.modelId.toLowerCase().includes('turbo') || modelPath.toLowerCase().includes('turbo')
+  const defaultSteps = isTurbo ? '12' : '25'
+  const stepsToUse = opts.steps ? String(opts.steps) : defaultSteps
+  args.push('--request-option', `num_inference_steps=${stepsToUse}`)
+  args.push('--request-option', `steps=${stepsToUse}`)
+
+  const onProgress = (chunk: string) => {
+    try { _e.sender.send('gen:progress', { type: 'music', text: chunk }) } catch {}
   }
 
-  const r = await runCli(args, 360000)
+  // Default timeout: 15 minutes (900,000 ms)
+  const timeoutMs = opts.timeout ? parseInt(opts.timeout, 10) * 1000 : 900000
+
+  const r = await runCli(args, timeoutMs, onProgress)
   if (!fs.existsSync(outFile)){
-    const errText = (r.err || r.out || '').slice(0, 1000)
+    const errText = (r.err || r.out || '').slice(0, 1500)
     let hint = ''
     if (errText.toLowerCase().includes('unknown family')) {
       hint = `\n\nFamily "${family}" was rejected by the backend. Supported families include: ace_step, stable_audio, minimax_music3, heartmula.`
