@@ -190,8 +190,9 @@ function TTS(){
   const hasAnyInstalled = installedModels.length > 0
 
   const [modelId,setModelId]=useState('')
-  const [text,setText]=useState('Hello! audio.cpp Studio is running locally — no Python needed. Try cloning a voice!')
+  const [text,setText]=useState('Hello! audio.cpp Studio is running locally — no Python needed. Fast, high-fidelity native audio inference.')
   const [voiceId,setVoiceId]=useState('')
+  const [instruct,setInstruct]=useState('')
   const [voiceRef,setVoiceRef]=useState('')
   const [referenceText,setReferenceText]=useState('')
   const [drag,setDrag]=useState(false)
@@ -207,12 +208,24 @@ function TTS(){
   const fileName = voiceRef ? voiceRef.split(/\\|\//).pop() : ''
 
   const selectedModel = models.find((m:any)=> m.id===modelId)
+  const fam = (selectedModel?.family || '').toLowerCase()
+  const id = (selectedModel?.id || '').toLowerCase()
+
+  const capabilities = selectedModel?.capabilities || {
+    supportsVoiceClone: ['pocket_tts', 'qwen3_tts', 'fish_audio', 'higgs_audio_tts', 'index_tts2',
+      'chatterbox', 'dramabox', 'dots_tts', 'fireredtts3', 'firered_audio',
+      'f5_tts', 'glm_tts', 'moss_tts_local', 'moss_tts_nano', 'omnivoice', 'voxcpm2'].includes(fam) || id.includes('clone'),
+    requiresReferenceText: (fam === 'qwen3_tts' && !id.includes('customvoice') && !id.includes('voicedesign')) || fam === 'glm_tts' || fam === 'fireredtts3',
+    supportsVoiceInstruct: ['qwen3_tts', 'fireredtts3', 'irodori_tts', 'moss_voicegen', 'omnivoice', 'voxcpm2'].includes(fam) || id.includes('instruct') || id.includes('voicedesign'),
+    supportsPresetVoices: ['supertonic', 'neutts', 'magpie_tts', 'pocket_tts', 'qwen3_tts', 'confucius4_tts'].includes(fam),
+    presetVoices: fam === 'supertonic' ? ['alba', 'calm_male', 'calm_female', 'energetic', 'narrator'] : undefined
+  }
 
   return (
     <div style={{display:'grid', gap:14, maxWidth:1140}}>
       <div className="hero">
         <div className="row" style={{justifyContent:'space-between'}}>
-          <div><h2>Text to Speech</h2><p>Natural, instant, local. Clone any voice with a single sample — sleek dark studio, zero cloud.</p></div>
+          <div><h2>Text to Speech</h2><p>Natural, instant, local audio inference — pure C++ GGUF engine, zero Python dependencies.</p></div>
           <div className="wave"><i/><i/><i/><i/><i/></div>
         </div>
       </div>
@@ -225,17 +238,59 @@ function TTS(){
             <ModelPicker models={installedModels} value={modelId} onChange={setModelId} defaultTask="tts" placeholder="Choose an installed TTS model" />
           ) : (
             <div style={{padding:'12px', background:'rgba(250,204,21,.08)', border:'1px solid rgba(250,204,21,.2)', borderRadius:8, fontSize:12}}>
-              No models installed yet — go to <b>Models</b> tab to download PocketTTS, Qwen3-TTS, or import a .gguf.
+              No models installed yet — go to <b>Models</b> tab to download PocketTTS, Qwen3-TTS, or Supertonic.
             </div>
           )}
-          <div className="small mono" style={{marginTop:6}}>
-            {selectedModel ? `Family: ${selectedModel.family} • Task: ${selectedModel.task.toUpperCase()} • ${selectedModel.primaryGguf || selectedModel.runtime}` : `${installedModels.length} installed models`}
+          <div className="small mono" style={{marginTop:6, display:'flex', gap:6, flexWrap:'wrap', alignItems:'center'}}>
+            {selectedModel ? (
+              <>
+                <span className="tag">Family: {selectedModel.family}</span>
+                {capabilities.supportsVoiceClone ? (
+                  <span className="pill" style={{background:'rgba(16,185,129,0.15)', color:'#34D399', border:'1px solid rgba(16,185,129,0.3)'}}>Voice Clone Ready</span>
+                ) : (
+                  <span className="pill" style={{background:'rgba(59,130,246,0.15)', color:'#60A5FA', border:'1px solid rgba(59,130,246,0.3)'}}>Preset Voices Only</span>
+                )}
+                {selectedModel.primaryGguf && <span className="kbd">{selectedModel.primaryGguf}</span>}
+              </>
+            ) : `${installedModels.length} installed models`}
           </div>
 
           <div style={{marginTop:12}} className="grid2">
-            <div><label className="small" style={{fontWeight:700}}>Language</label><select className="select" value={language} onChange={e=> setLanguage(e.target.value)}><option value="en">English</option><option value="es">Spanish</option><option value="zh">中文</option><option value="ja">日本語</option><option value="de">Deutsch</option><option value="fr">Français</option></select></div>
-            <div><label className="small" style={{fontWeight:700}}>Preset voice</label><input className="input" placeholder="alba / calm_male — or use clone →" value={voiceId} onChange={e=> setVoiceId(e.target.value)} /></div>
+            <div>
+              <label className="small" style={{fontWeight:700}}>Language</label>
+              <select className="select" value={language} onChange={e=> setLanguage(e.target.value)}>
+                <option value="en">English</option>
+                <option value="es">Spanish</option>
+                <option value="zh">中文</option>
+                <option value="ja">日本語</option>
+                <option value="de">Deutsch</option>
+                <option value="fr">Français</option>
+                <option value="ko">한국어</option>
+                <option value="it">Italiano</option>
+                <option value="pt">Português</option>
+              </select>
+            </div>
+            <div>
+              <label className="small" style={{fontWeight:700}}>Preset voice / Speaker ID</label>
+              {capabilities.presetVoices && capabilities.presetVoices.length > 0 ? (
+                <div style={{display:'flex', gap:6}}>
+                  <select className="select" value={voiceId} onChange={e=> setVoiceId(e.target.value)} style={{flex:1}}>
+                    <option value="">Default Voice</option>
+                    {capabilities.presetVoices.map((v: string) => <option key={v} value={v}>{v}</option>)}
+                  </select>
+                </div>
+              ) : (
+                <input className="input" placeholder={capabilities.supportsVoiceClone ? "Optional speaker name / ID" : "e.g. alba / calm_male"} value={voiceId} onChange={e=> setVoiceId(e.target.value)} />
+              )}
+            </div>
           </div>
+
+          {capabilities.supportsVoiceInstruct && (
+            <div style={{marginTop:12}}>
+              <label className="small" style={{fontWeight:700}}>Voice Design / Style Prompt <span style={{fontWeight:400, color:'var(--muted)'}}>(Instruct model)</span></label>
+              <input className="input" placeholder='e.g. "Warm radio host with soft British accent", "Energetic cheerful narrator"' value={instruct} onChange={e=> setInstruct(e.target.value)} />
+            </div>
+          )}
 
           <div style={{marginTop:12}}>
             <label className="small" style={{fontWeight:700}}>Text</label>
@@ -245,15 +300,27 @@ function TTS(){
 
           <button className="btn primary" style={{width:'100%', justifyContent:'center', padding:'12px', marginTop:14, fontSize:14}} disabled={busy || !modelId || !text.trim()} onClick={async()=>{
             setBusy(true); setResult(null)
-            try{ const r=await window.api.tts({ modelId, family: selectedModel?.family, text, voiceRef: voiceRef||undefined, voiceId: voiceId||undefined, referenceText: referenceText||undefined, language }); setResult(r)}
+            try{
+              const r = await window.api.tts({
+                modelId,
+                family: selectedModel?.family,
+                text,
+                voiceRef: capabilities.supportsVoiceClone ? (voiceRef || undefined) : undefined,
+                voiceId: voiceId || undefined,
+                instruct: instruct || undefined,
+                referenceText: (capabilities.supportsVoiceClone && voiceRef) ? (referenceText || undefined) : undefined,
+                language
+              })
+              setResult(r)
+            }
             catch(e:any){ setResult({error:e.message}) }
             setBusy(false)
           }}>{busy?'Synthesizing…':'▶ Generate speech'}</button>
 
           {result && <div style={{marginTop:12, padding:12, background:'var(--panel2)', border:'1px solid var(--border)', borderRadius:10}}>
-            {result.error ? <div style={{color:'#F87171', fontWeight:700}}>{result.error}</div> : <>
+            {result.error ? <div style={{color:'#F87171', fontWeight:700, whiteSpace:'pre-wrap'}}>{result.error}</div> : <>
               <div className="small mono">via {result.via}</div>
-              <div style={{fontWeight:700, wordBreak:'break-all', fontSize:12}}>{result.outFile}</div>
+              <div style={{fontWeight:700, wordBreak:'break-all', fontSize:12, marginTop:4}}>{result.outFile}</div>
               {result.outFile?.endsWith('.wav') || result.outFile?.endsWith('.mp3') ? <audio controls src={`file://${result.outFile}`} style={{width:'100%', marginTop:8}}/> : null}
               <div className="row" style={{marginTop:8}}><button className="btn" onClick={()=> window.api.revealOutput(result.outFile)}>Show in folder</button><button className="btn ghost" onClick={()=> navigator.clipboard.writeText(result.outFile)}>Copy</button></div>
             </>}
@@ -261,34 +328,84 @@ function TTS(){
         </div>
 
         <div style={{display:'grid', gap:12}}>
-          <div className="voice-card">
-            <div className="head"><span style={{width:28,height:28,borderRadius:8,display:'grid',placeItems:'center',background:'var(--text)',color:'var(--bg)',fontSize:13}}>◉</span><b>Clone voice</b><span className="badge-missing" style={{marginLeft:'auto'}}>clear & aesthetic</span></div>
-            <div className="small" style={{marginBottom:10}}>Drop a clean <b>10–30s</b> sample. Mono, quiet, single speaker.</div>
-            <div className={`audio-drop ${drag?'drag':''}`} onDragOver={e=>{e.preventDefault(); setDrag(true)}} onDragLeave={()=> setDrag(false)} onDrop={async e=>{
-              e.preventDefault(); setDrag(false); const f=(e.dataTransfer.files[0] as any)?.path; if(f) setVoiceRef(f)
-            }} onClick={async()=>{
-              const f=await window.api.chooseFile([{name:'Audio', extensions:['wav','mp3','m4a','flac','ogg']}]); if(f) setVoiceRef(f)
-            }}>
-              <div className="icon">◎</div>
-              <div style={{fontWeight:700, fontSize:13}}>{voiceRef ? 'Voice ready' : 'Drop voice here or click'}</div>
-              {!voiceRef && <div className="small" style={{textAlign:'center'}}>wav / mp3 / m4a / flac<br/>10–30s, no music, no echo</div>}
-              {voiceRef && <div className="pill mono" style={{maxWidth:'100%', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{fileName}</div>}
-              <div className="row" style={{justifyContent:'center'}}><span className="kbd">16kHz mono</span>{voiceRef && <button className="btn ghost" style={{padding:'4px 8px', fontSize:11}} onClick={e=>{e.stopPropagation(); setVoiceRef('')}}>✕ Clear</button>}</div>
+          {capabilities.supportsVoiceClone ? (
+            <div className="voice-card">
+              <div className="head">
+                <span style={{width:28,height:28,borderRadius:8,display:'grid',placeItems:'center',background:'var(--text)',color:'var(--bg)',fontSize:13}}>◉</span>
+                <b>Clone voice</b>
+                <span className="badge-missing" style={{marginLeft:'auto'}}>
+                  {capabilities.requiresReferenceText ? 'ICL Clone' : 'Acoustic Clone'}
+                </span>
+              </div>
+              <div className="small" style={{marginBottom:10}}>
+                {capabilities.requiresReferenceText
+                  ? 'Drop a clean 10–30s voice sample with transcript below for Qwen3 / GLM ICL cloning.'
+                  : 'Drop a clean 10–30s voice sample. Mono, quiet, single speaker (no transcript required).'}
+              </div>
+              <div className={`audio-drop ${drag?'drag':''}`} onDragOver={e=>{e.preventDefault(); setDrag(true)}} onDragLeave={()=> setDrag(false)} onDrop={async e=>{
+                e.preventDefault(); setDrag(false); const f=(e.dataTransfer.files[0] as any)?.path; if(f) setVoiceRef(f)
+              }} onClick={async()=>{
+                const f=await window.api.chooseFile([{name:'Audio', extensions:['wav','mp3','m4a','flac','ogg']}]); if(f) setVoiceRef(f)
+              }}>
+                <div className="icon">◎</div>
+                <div style={{fontWeight:700, fontSize:13}}>{voiceRef ? 'Voice ready' : 'Drop voice here or click'}</div>
+                {!voiceRef && <div className="small" style={{textAlign:'center'}}>wav / mp3 / m4a / flac<br/>10–30s, no music, no echo</div>}
+                {voiceRef && <div className="pill mono" style={{maxWidth:'100%', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{fileName}</div>}
+                <div className="row" style={{justifyContent:'center'}}><span className="kbd">16kHz mono</span>{voiceRef && <button className="btn ghost" style={{padding:'4px 8px', fontSize:11}} onClick={e=>{e.stopPropagation(); setVoiceRef('')}}>✕ Clear</button>}</div>
+              </div>
+              {voiceRef && <audio controls src={`file://${voiceRef}`} style={{width:'100%', marginTop:10}}/>}
+              <div className="row" style={{marginTop:10}}>
+                <input className="input mono" value={voiceRef} onChange={e=> setVoiceRef(e.target.value)} placeholder="or paste full path" style={{flex:1, fontSize:11}} />
+                <button className="btn" onClick={async()=>{const f=await window.api.chooseFile([{name:'Audio', extensions:['wav','mp3','flac','ogg','m4a']}]); if(f) setVoiceRef(f)}}>Browse</button>
+              </div>
+
+              {capabilities.requiresReferenceText ? (
+                <div style={{marginTop:10}}>
+                  <label className="small" style={{fontWeight:700}}>
+                    Reference transcript <span style={{fontWeight:400, color: voiceRef ? '#F59E0B' : 'var(--muted)'}}>
+                      ({voiceRef ? 'Required for Qwen3 / GLM clone' : 'Required when voice sample is attached'})
+                    </span>
+                  </label>
+                  <textarea
+                    className="textarea"
+                    style={{minHeight:56, fontSize:12, borderColor: (voiceRef && !referenceText.trim()) ? 'rgba(245,158,11,0.5)' : undefined}}
+                    value={referenceText}
+                    onChange={e=> setReferenceText(e.target.value)}
+                    placeholder='Exact transcript of reference audio (e.g. "Some call me nature. Others call me Mother Nature..."). Required for Qwen3 ICL mode.'
+                  />
+                  <div className="small" style={{marginTop:4, color:'var(--muted)'}}>
+                    Paste the exact spoken words in your reference audio file so the ICL model matches the voice timbre accurately.
+                  </div>
+                </div>
+              ) : (
+                <div style={{marginTop:10, padding:'8px 10px', borderRadius:8, background:'var(--panel2)', border:'1px solid var(--border)', fontSize:11, color:'var(--muted)'}}>
+                  <b style={{color:'var(--text)'}}>Note:</b> {selectedModel?.label || selectedModel?.family} performs direct acoustic voice cloning from the WAV file. <b>No reference transcript is required.</b>
+                </div>
+              )}
+
+              <div style={{marginTop:10, padding:'9px 10px', borderRadius:10, background:'var(--panel2)', border:'1px solid var(--border)', fontSize:11, lineHeight:1.5, color:'var(--muted)'}}>
+                <b style={{color:'var(--text)'}}>Tip</b> — Clear the voice box anytime to generate standard voice without cloning.
+              </div>
             </div>
-            {voiceRef && <audio controls src={`file://${voiceRef}`} style={{width:'100%', marginTop:10}}/>}
-            <div className="row" style={{marginTop:10}}>
-              <input className="input mono" value={voiceRef} onChange={e=> setVoiceRef(e.target.value)} placeholder="or paste full path" style={{flex:1, fontSize:11}} />
-              <button className="btn" onClick={async()=>{const f=await window.api.chooseFile([{name:'Audio', extensions:['wav','mp3','flac','ogg','m4a']}]); if(f) setVoiceRef(f)}}>Browse</button>
+          ) : (
+            <div className="voice-card" style={{borderStyle:'dashed'}}>
+              <div className="head">
+                <span style={{width:28,height:28,borderRadius:8,display:'grid',placeItems:'center',background:'rgba(59,130,246,0.2)',color:'#60A5FA',fontSize:13}}>ℹ</span>
+                <b>Preset Voice Model</b>
+                <span className="pill" style={{marginLeft:'auto', background:'rgba(59,130,246,0.15)', color:'#60A5FA', border:'1px solid rgba(59,130,246,0.3)'}}>Preset Only</span>
+              </div>
+              <div className="small" style={{marginTop:8, lineHeight:1.6}}>
+                <b>{selectedModel?.label || selectedModel?.family}</b> is optimized for ultra-fast synthesis with built-in speaker presets.
+                <div style={{marginTop:10, padding:'10px 12px', background:'var(--panel2)', borderRadius:8, border:'1px solid var(--border)', fontSize:12}}>
+                  ✓ <b>No cloning sample or reference transcript needed!</b><br/>
+                  Select a preset voice (e.g. <code>{capabilities.presetVoices?.join(', ') || 'alba, calm_male'}</code>) on the left and click <b>Generate speech</b>.
+                </div>
+                <div style={{marginTop:10, color:'var(--muted)'}}>
+                  To clone a custom voice, select <b>PocketTTS</b>, <b>Qwen3-TTS</b>, or <b>Fish Audio</b> from the model picker.
+                </div>
+              </div>
             </div>
-            <div style={{marginTop:10}}>
-              <label className="small" style={{fontWeight:700}}>Reference transcript <span style={{fontWeight:400, color:'var(--muted)'}}>(Qwen3 ICL — required for Qwen3 clone)</span></label>
-              <textarea className="textarea" style={{minHeight:56, fontSize:12}} value={referenceText} onChange={e=> setReferenceText(e.target.value)} placeholder='Exact transcript of reference audio (e.g. "Some call me nature. Others call me Mother Nature..."). Required for Qwen3 ICL, optional for others — improves clone quality.' />
-              <div className="small" style={{marginTop:4}}>If you see “Qwen3 voice clone ICL mode requires reference text”, paste the exact words spoken in the reference wav.</div>
-            </div>
-            <div style={{marginTop:10, padding:'9px 10px', borderRadius:10, background:'var(--panel2)', border:'1px solid var(--border)', fontSize:11, lineHeight:1.5, color:'var(--muted)'}}>
-              <b style={{color:'var(--text)'}}>Tip</b> — your own voice = instant host. No echo, no bgm. For Qwen3, add the transcript above.
-            </div>
-          </div>
+          )}
 
           <div className="card">
             <h3><span className="dot" style={{background:'var(--muted)'}}/> Recent</h3>

@@ -3,6 +3,14 @@ import * as path from 'path'
 import * as https from 'https'
 import * as http from 'http'
 
+export interface ModelCapabilities {
+  supportsVoiceClone: boolean
+  requiresReferenceText: boolean
+  supportsVoiceInstruct: boolean
+  supportsPresetVoices: boolean
+  presetVoices?: string[]
+}
+
 export interface ModelEntry {
   id: string
   family: string
@@ -19,6 +27,41 @@ export interface ModelEntry {
   localPath?: string
   primaryGguf?: string
   ggufFiles?: string[]
+  capabilities?: ModelCapabilities
+}
+
+export function getModelCapabilities(family: string, modelId?: string): ModelCapabilities {
+  const fam = (family || '').toLowerCase().trim()
+  const id = (modelId || '').toLowerCase().trim()
+
+  // Voice cloning (WAV sample / prompt)
+  const supportsVoiceClone = [
+    'pocket_tts', 'qwen3_tts', 'fish_audio', 'higgs_audio_tts', 'index_tts2',
+    'chatterbox', 'dramabox', 'dots_tts', 'fireredtts3', 'firered_audio',
+    'f5_tts', 'glm_tts', 'moss_tts_local', 'moss_tts_nano', 'omnivoice', 'voxcpm2'
+  ].includes(fam) || id.includes('clone')
+
+  // Requires exact reference transcript for ICL voice cloning
+  const requiresReferenceText = (fam === 'qwen3_tts' && !id.includes('customvoice') && !id.includes('voicedesign')) || fam === 'glm_tts' || fam === 'fireredtts3'
+
+  // Supports natural language voice instructions
+  const supportsVoiceInstruct = ['qwen3_tts', 'fireredtts3', 'irodori_tts', 'moss_voicegen', 'omnivoice', 'voxcpm2'].includes(fam) || id.includes('instruct') || id.includes('voicedesign')
+
+  // Supports named preset voices
+  const supportsPresetVoices = ['supertonic', 'neutts', 'magpie_tts', 'pocket_tts', 'qwen3_tts', 'confucius4_tts'].includes(fam)
+
+  let presetVoices: string[] | undefined
+  if (fam === 'supertonic') presetVoices = ['alba', 'calm_male', 'calm_female', 'energetic', 'narrator']
+  else if (fam === 'pocket_tts') presetVoices = ['speaker_1', 'speaker_2', 'speaker_3']
+  else if (fam === 'magpie_tts') presetVoices = ['magpie_en_male', 'magpie_en_female']
+
+  return {
+    supportsVoiceClone,
+    requiresReferenceText,
+    supportsVoiceInstruct,
+    supportsPresetVoices,
+    presetVoices
+  }
 }
 
 export interface ResolvedInstalledModel {
@@ -258,25 +301,32 @@ export function resolveInstalledModel(dataRoot: string, modelId: string, preferr
 
 export function scanInstalled(dataRoot: string, customModels?: Record<string, any>): ModelEntry[] {
   const dir = getModelsDir(dataRoot)
-  if (!fs.existsSync(dir)) return CURATED_MODELS.map(m=>({...m, installed:false}))
+  if (!fs.existsSync(dir)) {
+    return CURATED_MODELS.map(m=>({
+      ...m,
+      installed: false,
+      capabilities: getModelCapabilities(m.family, m.id)
+    }))
+  }
   const entries = fs.readdirSync(dir)
-  const installedDirs = new Set(entries)
 
   const base = CURATED_MODELS.map(m=>{
     const p = getModelPath(dataRoot, m.id)
     const resolved = resolveInstalledModel(dataRoot, m.id)
     const installed = resolved.installed
     const custom = customModels?.[m.id]
+    const family = custom?.family || m.family
     return {
       ...m,
       task: (custom?.task as any) || m.task,
-      family: custom?.family || m.family,
+      family,
       label: custom?.label || m.label,
       description: custom?.description || m.description,
       installed,
       localPath: installed ? p : undefined,
       primaryGguf: resolved.primaryFileName || undefined,
       ggufFiles: resolved.files.map(f => path.basename(f)),
+      capabilities: getModelCapabilities(family, m.id)
     }
   })
 
@@ -310,6 +360,7 @@ export function scanInstalled(dataRoot: string, customModels?: Record<string, an
         localPath: p,
         primaryGguf: resolved.primaryFileName || undefined,
         ggufFiles: resolved.files.map(f => path.basename(f)),
+        capabilities: getModelCapabilities(family, e)
       })
     }catch{}
   }

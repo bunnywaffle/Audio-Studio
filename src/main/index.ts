@@ -4,7 +4,7 @@ import * as fs from 'fs'
 import * as cp from 'child_process'
 import { loadSettings, saveSettings } from './settings'
 import { detectBackend, importBackendFromZip, runCliHelp, getBackendBin, runServerHealth, fetchGithubReleases, downloadBackendFromUrl, testBackend, listBackends, selectBackend, deleteBackend, repairBackend } from './backend'
-import { scanInstalled, deleteModel, getModelPath, getModelsDir, resolveInstalledModel, resolveModelFamily, resolveModelTask, findAllGgufFiles } from './models'
+import { scanInstalled, deleteModel, getModelPath, getModelsDir, resolveInstalledModel, resolveModelFamily, resolveModelTask, findAllGgufFiles, getModelCapabilities } from './models'
 import { startServer, stopServer, isServerRunning, getServerPid, getServerStatus } from './server'
 
 let win: BrowserWindow | null = null
@@ -518,12 +518,32 @@ ipcMain.handle('gen:tts', async (_e, opts:any) => {
     }
   }
   const family = resolveModelFamily(opts.modelId, opts.family || resolved.family, resolved.ggufPath)
+  const capabilities = getModelCapabilities(family, opts.modelId)
   const backendAcc = getBackendAcceleration()
+
   const args = ['--task','tts','--family', family, '--model', resolved.ggufPath, '--text', opts.text, '--out', outFile]
   if (backendAcc && backendAcc !== 'cpu') args.push('--backend', backendAcc)
-  if (voiceRefToUse) args.push('--voice-ref', voiceRefToUse)
-  if (opts.referenceText) args.push('--reference-text', opts.referenceText)
-  if (opts.voiceId) args.push('--voice-id', opts.voiceId)
+
+  // Voice cloning: only pass if model supports it and user provided a sample
+  if (capabilities.supportsVoiceClone && voiceRefToUse) {
+    args.push('--voice-ref', voiceRefToUse)
+    // Reference transcript: pass if provided
+    if (opts.referenceText && opts.referenceText.trim()) {
+      args.push('--reference-text', opts.referenceText.trim())
+    }
+  }
+
+  // Voice instruction / prompt (e.g. for voice design / instruct models)
+  if (capabilities.supportsVoiceInstruct && opts.instruct && opts.instruct.trim()) {
+    args.push('--instruct', opts.instruct.trim())
+  }
+
+  // Preset voice / speaker
+  if (opts.voiceId && opts.voiceId.trim()) {
+    args.push('--voice-id', opts.voiceId.trim())
+    args.push('--speaker', opts.voiceId.trim())
+  }
+
   if (opts.language) args.push('--load-option', `language=${opts.language}`)
   
   const onProgress = (chunk: string) => {
@@ -534,7 +554,7 @@ ipcMain.handle('gen:tts', async (_e, opts:any) => {
   if (!fs.existsSync(outFile)){
     const errLower = (r.err + r.out).toLowerCase()
     if(errLower.includes('reference text') || errLower.includes('icl mode requires')){
-      throw new Error(`CLI failed — Qwen3 voice clone ICL mode requires reference text.\n${(r.err||r.out).slice(0,700)}\n\nFix: In the TTS panel, paste the exact transcript of your reference audio into the "Reference transcript" field. Example: "Some call me nature. Others call me Mother Nature." This is required for Qwen3 when using --voice-ref.`)
+      throw new Error(`Voice cloning failed — this model (${family}) requires a reference transcript when using a voice sample.\n\nFix: Paste the exact spoken words of your reference audio into the "Reference transcript" field, or clear the voice sample to use the standard default voice.`)
     }
     if(errLower.includes('invalid wav') || errLower.includes('riff') || errLower.includes('wav riff')){
       const base = `CLI failed — invalid WAV RIFF header for voice file "${opts.voiceRef}".\n${(r.err||r.out).slice(0,700)}`
