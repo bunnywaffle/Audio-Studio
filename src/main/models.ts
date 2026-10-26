@@ -2,6 +2,7 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as https from 'https'
 import * as http from 'http'
+import * as cp from 'child_process'
 
 export interface ModelCapabilities {
   supportsVoiceClone: boolean
@@ -31,25 +32,101 @@ export interface ModelEntry {
   capabilities?: ModelCapabilities
 }
 
-export function getModelCapabilities(family: string, modelId?: string): ModelCapabilities {
-  const fam = (family || '').toLowerCase().trim()
+export interface DynamicModelSpec {
+  family: string
+  variant: string
+  supportedTasks: string[]
+  supportsSpeakerReference: boolean
+  supportsStyleCondition: boolean
+  supportsTimestamps: boolean
+  languages: string[]
+}
+
+export function inspectModelWithCli(cliBin: string, modelGgufPath: string): DynamicModelSpec | null {
+  if (!cliBin || !fs.existsSync(cliBin) || !modelGgufPath || !fs.existsSync(modelGgufPath)) return null
+  try {
+    const res = cp.spawnSync(cliBin, ['--model', modelGgufPath, '--inspect'], {
+      timeout: 3500,
+      encoding: 'utf-8',
+      windowsHide: true
+    })
+    const out = (res.stdout || '') + (res.stderr || '')
+    if (!out.includes('family=')) return null
+
+    let family = ''
+    let variant = ''
+    const tasks: string[] = []
+    let supportsSpeakerReference = false
+    let supportsStyleCondition = false
+    let supportsTimestamps = false
+    let languages: string[] = []
+
+    const lines = out.split(/\r?\n/)
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (trimmed.startsWith('family=')) family = trimmed.slice(7).trim()
+      else if (trimmed.startsWith('variant=')) variant = trimmed.slice(8).trim()
+      else if (trimmed.startsWith('task=')) {
+        const tMatch = trimmed.match(/^task=([a-z0-9_]+)/i)
+        if (tMatch && !tasks.includes(tMatch[1])) tasks.push(tMatch[1])
+      }
+      else if (trimmed.startsWith('supports_speaker_reference=')) {
+        supportsSpeakerReference = trimmed.includes('true')
+      }
+      else if (trimmed.startsWith('supports_style_condition=')) {
+        supportsStyleCondition = trimmed.includes('true')
+      }
+      else if (trimmed.startsWith('supports_timestamps=')) {
+        supportsTimestamps = trimmed.includes('true')
+      }
+      else if (trimmed.startsWith('languages=')) {
+        languages = trimmed.slice(10).split(',').map(s => s.trim()).filter(Boolean)
+      }
+    }
+
+    if (!family) return null
+    return {
+      family,
+      variant,
+      supportedTasks: tasks,
+      supportsSpeakerReference,
+      supportsStyleCondition,
+      supportsTimestamps,
+      languages
+    }
+  } catch {
+    return null
+  }
+}
+
+export function getModelCapabilities(family: string, modelId?: string, spec?: DynamicModelSpec | null): ModelCapabilities {
+  const fam = (spec?.family || family || '').toLowerCase().trim()
   const id = (modelId || '').toLowerCase().trim()
+  const variant = (spec?.variant || '').toLowerCase().trim()
 
   // Voice cloning (WAV sample / prompt)
-  const supportsVoiceClone = [
-    'pocket_tts', 'qwen3_tts', 'fish_audio', 'higgs_audio_tts', 'index_tts2',
-    'chatterbox', 'dramabox', 'dots_tts', 'fireredtts3', 'firered_audio',
-    'f5_tts', 'glm_tts', 'moss_tts_local', 'moss_tts_nano', 'omnivoice', 'voxcpm2'
-  ].includes(fam) || id.includes('clone')
+  const supportsVoiceClone = spec ? (spec.supportsSpeakerReference || spec.supportedTasks.includes('clon')) : (
+    [
+      'pocket_tts', 'qwen3_tts', 'fish_audio', 'higgs_audio_tts', 'index_tts2',
+      'chatterbox', 'dramabox', 'dots_tts', 'fireredtts3', 'firered_audio',
+      'f5_tts', 'glm_tts', 'moss_tts_local', 'moss_tts_nano', 'omnivoice', 'voxcpm2'
+    ].includes(fam) || id.includes('clone')
+  )
 
   // Pure ICL voice clone models that REQUIRE a reference voice sample and will abort without one
-  const requiresVoiceClone = (fam === 'qwen3_tts' && !id.includes('customvoice') && !id.includes('voicedesign')) || fam === 'glm_tts'
+  const requiresVoiceClone = spec
+    ? (spec.supportsSpeakerReference && (variant.includes('base') || (fam === 'qwen3_tts' && !variant.includes('custom') && !variant.includes('design'))))
+    : ((fam === 'qwen3_tts' && !id.includes('customvoice') && !id.includes('voicedesign')) || fam === 'glm_tts')
 
   // Requires exact reference transcript for ICL voice cloning
-  const requiresReferenceText = (fam === 'qwen3_tts' && !id.includes('customvoice') && !id.includes('voicedesign')) || fam === 'glm_tts' || fam === 'fireredtts3'
+  const requiresReferenceText = spec
+    ? (requiresVoiceClone || fam === 'qwen3_tts' || fam === 'glm_tts' || fam === 'fireredtts3')
+    : ((fam === 'qwen3_tts' && !id.includes('customvoice') && !id.includes('voicedesign')) || fam === 'glm_tts' || fam === 'fireredtts3')
 
   // Supports natural language voice instructions
-  const supportsVoiceInstruct = ['qwen3_tts', 'fireredtts3', 'irodori_tts', 'moss_voicegen', 'omnivoice', 'voxcpm2'].includes(fam) || id.includes('instruct') || id.includes('voicedesign')
+  const supportsVoiceInstruct = spec
+    ? (variant.includes('design') || variant.includes('instruct') || spec.supportedTasks.includes('vdes'))
+    : (['qwen3_tts', 'fireredtts3', 'irodori_tts', 'moss_voicegen', 'omnivoice', 'voxcpm2'].includes(fam) || id.includes('instruct') || id.includes('voicedesign'))
 
   // Supports named preset voices
   const supportsPresetVoices = ['supertonic', 'neutts', 'magpie_tts', 'pocket_tts', 'qwen3_tts', 'confucius4_tts'].includes(fam)

@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('api', {
   listBackendVersions: () => ipcRenderer.invoke('backend:listVersions'),
   selectBackendVersion: (v:string) => ipcRenderer.invoke('backend:selectVersion', v),
   deleteBackendVersion: (v:string) => ipcRenderer.invoke('backend:deleteVersion', v),
+  detectDevices: () => ipcRenderer.invoke('backend:devices'),
   onBackendProgress: (cb:(data:any)=>void)=>{ const h=(_:any,d:any)=> cb(d); ipcRenderer.on('backend:downloadProgress',h); return ()=> ipcRenderer.removeListener('backend:downloadProgress',h) },
 
   // models

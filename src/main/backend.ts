@@ -103,10 +103,77 @@ export function getBackendBin(backendPath: string, name: 'cli' | 'server' | 'mod
   return null
 }
 
+export function safeRemoveDir(dirPath: string): void {
+  if (!fs.existsSync(dirPath)) return
+
+  // 1. Terminate any running backend processes that could be locking files
+  killAllBackendProcesses()
+
+  // 2. Try standard removal with retries
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      fs.rmSync(dirPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 150 })
+      return
+    } catch (e: any) {
+      if (attempt >= 1 && (e.code === 'EPERM' || e.code === 'EBUSY' || e.code === 'ENOTEMPTY')) {
+        // Windows NTFS file locking workaround:
+        // When an executable or DLL inside dirPath is locked by a lingering OS handle or antivirus,
+        // Windows ALLOWS renaming the directory on the same filesystem volume!
+        const trashDir = path.join(path.dirname(dirPath), `_trash_${path.basename(dirPath)}_${Date.now()}`)
+        try {
+          fs.renameSync(dirPath, trashDir)
+          setTimeout(() => {
+            try { fs.rmSync(trashDir, { recursive: true, force: true }) } catch {}
+          }, 4000)
+          return
+        } catch {}
+      }
+      if (process.platform === 'win32') {
+        try { cp.spawnSync('powershell', ['-Command', 'Start-Sleep -Milliseconds 250'], { stdio: 'ignore' }) } catch {}
+      }
+    }
+  }
+
+  // 3. Final rename attempt
+  if (fs.existsSync(dirPath)) {
+    const trashDir = path.join(path.dirname(dirPath), `_trash_${path.basename(dirPath)}_${Date.now()}`)
+    try {
+      fs.renameSync(dirPath, trashDir)
+      setTimeout(() => {
+        try { fs.rmSync(trashDir, { recursive: true, force: true }) } catch {}
+      }, 5000)
+    } catch (err: any) {
+      throw new Error(`Directory locked by Windows (${path.basename(dirPath)}): ${err.message}. Please close any other programs using audio.cpp and try again.`)
+    }
+  }
+}
+
+export function safeReplaceDir(srcDir: string, destDir: string): void {
+  safeRemoveDir(destDir)
+  fs.mkdirSync(destDir, { recursive: true })
+  fs.cpSync(srcDir, destDir, { recursive: true })
+}
+
+export function cleanOldTrash(backendRoot: string): void {
+  try {
+    if (!fs.existsSync(backendRoot)) return
+    const entries = fs.readdirSync(backendRoot)
+    for (const e of entries) {
+      if (e.startsWith('_trash_') || e.startsWith('_tmp_import_')) {
+        const full = path.join(backendRoot, e)
+        try { fs.rmSync(full, { recursive: true, force: true }) } catch {}
+      }
+    }
+  } catch {}
+}
+
 export async function importBackendFromZip(zipPath: string, dataRoot: string): Promise<{ backendPath:string, version:string }> {
+  killAllBackendProcesses()
   if (!fs.existsSync(zipPath)) throw new Error('Zip not found: '+zipPath)
   const zip = new AdmZip(zipPath)
   const targetRoot = path.join(dataRoot,'backend')
+  cleanOldTrash(targetRoot)
+
   const tmpExtract = path.join(targetRoot,'_tmp_import_'+Date.now())
   fs.mkdirSync(tmpExtract,{recursive:true})
   zip.extractAllTo(tmpExtract, true)
@@ -129,9 +196,7 @@ export async function importBackendFromZip(zipPath: string, dataRoot: string): P
 
   const version = path.basename(zipPath).replace(/\.zip$/i,'')
   const dest = path.join(targetRoot, version)
-  if (fs.existsSync(dest)) fs.rmSync(dest,{recursive:true,force:true})
-  fs.mkdirSync(path.dirname(dest),{recursive:true})
-  fs.cpSync(sourceDir, dest, {recursive:true})
+  safeReplaceDir(sourceDir, dest)
   
   // write VERSION file
   try { fs.writeFileSync(path.join(dest, 'VERSION'), version) } catch {}
@@ -139,29 +204,16 @@ export async function importBackendFromZip(zipPath: string, dataRoot: string): P
   // If CUDA backend, check if a companion cudart runtime zip exists in _downloads
   const acc = getBackendAccelerationType(dest, version)
   if (acc === 'cuda') {
-    const dlDir = path.join(targetRoot, '_downloads')
-    if (fs.existsSync(dlDir)) {
-      const zips = fs.readdirSync(dlDir).filter(f => f.endsWith('.zip'))
-      const cudaMatch = version.match(/cuda(\d+(\.\d+)?)/i)?.[0] || 'cuda12.4'
-      const cudartZip = zips.find(z => new RegExp(`cudart.*${cudaMatch}`, 'i').test(z)) ||
-                        zips.find(z => /cudart.*cuda12\.4/i.test(z)) ||
-                        zips.find(z => /cudart/i.test(z) || /cuda-runtime/i.test(z))
-      if (cudartZip) {
-        try {
-          const cz = new AdmZip(path.join(dlDir, cudartZip))
-          cz.extractAllTo(dest, true)
-        } catch {}
-      }
-    }
+    ensureCudaDlls(dest, targetRoot, version)
   }
 
-  // also update current copy
+  // update current copy safely
   const current = path.join(targetRoot,'current')
-  if (fs.existsSync(current)) fs.rmSync(current,{recursive:true,force:true})
-  fs.cpSync(dest, current, {recursive:true})
+  safeReplaceDir(dest, current)
+  try { fs.writeFileSync(path.join(current, 'VERSION'), version) } catch {}
 
   // cleanup tmp
-  fs.rmSync(tmpExtract,{recursive:true,force:true})
+  safeRemoveDir(tmpExtract)
   return { backendPath: current, version }
 }
 
@@ -235,8 +287,8 @@ export function selectBackend(dataRoot:string, version:string): {backendPath:str
   const src = path.join(root, version)
   const dest = path.join(root,'current')
   if(!fs.existsSync(src)) throw new Error('Version not found: '+version)
-  if(fs.existsSync(dest)) fs.rmSync(dest,{recursive:true,force:true})
-  fs.cpSync(src, dest, {recursive:true})
+
+  safeReplaceDir(src, dest)
 
   // If CUDA backend, ensure companion runtime DLLs are present
   const acc = getBackendAccelerationType(dest, version)
@@ -285,7 +337,7 @@ export function deleteBackend(dataRoot:string, version:string){
   const p = path.join(root, version)
   if(!fs.existsSync(p)) throw new Error('Not found: '+version)
   if(!p.startsWith(root)) throw new Error('Invalid path')
-  fs.rmSync(p,{recursive:true,force:true})
+  safeRemoveDir(p)
 }
 
 export async function repairBackend(dataRoot:string, onProgress?:(pct:number, dl:number, total:number)=>void): Promise<{backendPath:string, version:string, repaired:boolean, details:string}>{
@@ -674,9 +726,41 @@ function downloadFile(url:string, dest:string, onProgress?:(pct:number, dl:numbe
   })
 }
 
+export interface BackendDevice {
+  backend: string
+  name: string
+  type: 'GPU' | 'CPU'
+}
+
+export function detectBackendDevices(backendPath: string): BackendDevice[] {
+  const cliBin = getBackendBin(backendPath, 'cli')
+  if (!cliBin || !fs.existsSync(cliBin)) return []
+  try {
+    const res = cp.spawnSync(cliBin, ['--list-devices'], {
+      timeout: 3000,
+      encoding: 'utf-8',
+      windowsHide: true
+    })
+    const out = (res.stdout || '') + (res.stderr || '')
+    const devices: BackendDevice[] = []
+    const lines = out.split(/\r?\n/)
+    for (const l of lines) {
+      const m = l.match(/^([A-Za-z]+):\d+\s+"([^"]+)"\s+\[(GPU|CPU)\]/)
+      if (m) {
+        devices.push({ backend: m[1].toLowerCase(), name: m[2].trim(), type: m[3] as 'GPU' | 'CPU' })
+      }
+    }
+    return devices
+  } catch {
+    return []
+  }
+}
+
 export async function downloadBackendFromUrl(url:string, dataRoot:string, onProgress?:(pct:number, dl:number, total:number)=>void): Promise<{backendPath:string, version:string, zipPath:string}>{
+  killAllBackendProcesses()
   const tmpDir = path.join(dataRoot,'backend','_downloads')
   fs.mkdirSync(tmpDir,{recursive:true})
+  cleanOldTrash(path.join(dataRoot, 'backend'))
   const fileName = path.basename(new URL(url).pathname) || `backend_${Date.now()}.zip`
   const zipPath = path.join(tmpDir, fileName)
 

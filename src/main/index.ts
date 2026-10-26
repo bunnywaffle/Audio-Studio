@@ -3,8 +3,8 @@ import * as path from 'path'
 import * as fs from 'fs'
 import * as cp from 'child_process'
 import { loadSettings, saveSettings } from './settings'
-import { detectBackend, importBackendFromZip, runCliHelp, getBackendBin, runServerHealth, fetchGithubReleases, downloadBackendFromUrl, testBackend, listBackends, selectBackend, deleteBackend, repairBackend, getBackendAccelerationType, ensureCudaDlls } from './backend'
-import { scanInstalled, deleteModel, getModelPath, getModelsDir, resolveInstalledModel, resolveModelFamily, resolveModelTask, findAllGgufFiles, getModelCapabilities, ensureDefaultReferenceVoice } from './models'
+import { detectBackend, importBackendFromZip, runCliHelp, getBackendBin, runServerHealth, fetchGithubReleases, downloadBackendFromUrl, testBackend, listBackends, selectBackend, deleteBackend, repairBackend, getBackendAccelerationType, ensureCudaDlls, killAllBackendProcesses, detectBackendDevices } from './backend'
+import { scanInstalled, deleteModel, getModelPath, getModelsDir, resolveInstalledModel, resolveModelFamily, resolveModelTask, findAllGgufFiles, getModelCapabilities, ensureDefaultReferenceVoice, inspectModelWithCli } from './models'
 import { startServer, stopServer, isServerRunning, getServerPid, getServerStatus } from './server'
 
 let win: BrowserWindow | null = null
@@ -115,6 +115,8 @@ ipcMain.handle('backend:listReleases', async ()=> {
   return await fetchGithubReleases(10)
 })
 ipcMain.handle('backend:downloadRelease', async (e, url:string)=>{
+  if(isServerRunning()){ try{ await stopServer() }catch{} }
+  killAllBackendProcesses()
   const onProg = (pct:number, dl:number, total:number)=>{ try{ e.sender.send('backend:downloadProgress', {url, pct, dl, total})}catch{} }
   const r = await downloadBackendFromUrl(url, settings.dataRoot, onProg)
   settings.backendPath = r.backendPath
@@ -122,6 +124,10 @@ ipcMain.handle('backend:downloadRelease', async (e, url:string)=>{
   saveSettings(settings)
   e.sender.send('backend:downloadProgress', {url, pct:100, done:true, version:r.version})
   return { ...r, info: detectBackend(settings.backendPath) }
+})
+ipcMain.handle('backend:devices', async ()=>{
+  if(!settings.backendPath) return []
+  return detectBackendDevices(settings.backendPath)
 })
 
 ipcMain.handle('models:list', async () => scanInstalled(settings.dataRoot, settings.customModels))
@@ -660,8 +666,19 @@ ipcMain.handle('gen:tts', async (_e, opts:any) => {
     }
   }
 
-  const family = resolveModelFamily(opts.modelId, opts.family || resolved.family, resolved.ggufPath)
-  const capabilities = getModelCapabilities(family, opts.modelId)
+  let family = resolveModelFamily(opts.modelId, opts.family || resolved.family, resolved.ggufPath)
+  let capabilities = getModelCapabilities(family, opts.modelId)
+
+  // Dynamically inspect model via audio.cpp CLI contract if available
+  if (bin && resolved.ggufPath) {
+    try {
+      const spec = inspectModelWithCli(bin, resolved.ggufPath)
+      if (spec && spec.family) {
+        family = spec.family
+        capabilities = getModelCapabilities(family, opts.modelId, spec)
+      }
+    } catch {}
+  }
 
   // Dynamic model adaptation:
   // If the model strictly requires a voice clone sample (e.g. Qwen3 Base, GLM) and none is provided, auto-apply default reference voice

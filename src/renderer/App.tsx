@@ -942,6 +942,12 @@ function Models(){
 
 function SettingsView({settings,setSettings,backend,setBackend,server,setServer}:any){
   const [saving,setSaving]=useState(false)
+  const [devices,setDevices]=useState<any[]>([])
+
+  useEffect(()=>{
+    window.api.detectDevices?.().then((d:any)=> setDevices(d||[])).catch(()=>{})
+  },[backend])
+
   if(!settings) return <div className="card">Loading…</div>
   return (
     <div style={{display:'grid', gap:14, maxWidth:880}}>
@@ -959,6 +965,18 @@ function SettingsView({settings,setSettings,backend,setBackend,server,setServer}
         <div style={{padding:12, background:'var(--panel2)', border:'1px solid var(--border)', borderRadius:10}}>
           <div className="row" style={{justifyContent:'space-between'}}><div style={{fontWeight:700, fontSize:13, wordBreak:'break-all'}}>{backend?.path || 'No backend installed'}</div><span className={`pill ${backend?.hasCli?'live':''}`}>{backend?.hasCli?'● CLI ready':'○ missing'}</span></div>
           <div className="small mono" style={{marginTop:4}}>Version: {backend?.version || settings.backendVersion || '—'} • Mode: <b style={{color: backend?.acceleration==='cuda'?'#38BDF8':backend?.acceleration==='vulkan'?'#A855F7':'#4ADE80'}}>{backend?.acceleration?.toUpperCase() || 'CPU'} ACCELERATION</b> • {backend?.path?.includes('current')?'current active':''}</div>
+
+          {devices.length > 0 && (
+            <div style={{marginTop:8, padding:'6px 10px', background:'var(--bg)', border:'1px solid var(--border)', borderRadius:8, fontSize:11, display:'flex', alignItems:'center', flexWrap:'wrap', gap:6}}>
+              <span style={{fontWeight:700, color:'var(--text)'}}>Detected Hardware:</span>
+              {devices.map((d:any, i:number)=>(
+                <span key={i} className="pill" style={{background: d.type==='GPU'?'rgba(56,189,248,.12)':'rgba(74,222,128,.12)', borderColor: d.type==='GPU'?'rgba(56,189,248,.3)':'rgba(74,222,128,.3)'}}>
+                  {d.type === 'GPU' ? '⚡ GPU' : '💻 CPU'}: {d.name} ({d.backend.toUpperCase()})
+                </span>
+              ))}
+            </div>
+          )}
+
           <div className="row" style={{marginTop:10, flexWrap:'wrap'}}>
             <button className="btn" onClick={async()=>{const f=await window.api.chooseFile([{name:'Backend ZIP', extensions:['zip']}]); if(f){ const r=await window.api.importBackendZip(f); setBackend(r.info); const ns=await window.api.getSettings(); setSettings(ns)}}}>📦 Import ZIP</button>
             <button className="btn" onClick={async()=>{ try{ const h=await window.api.runCliHelp(); alert(h.slice(0,700)) }catch(e:any){ alert(e.message)} }}>Test --help</button>
