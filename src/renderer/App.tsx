@@ -333,6 +333,16 @@ function TTS(){
           {result && <div style={{marginTop:12, padding:12, background:'var(--panel2)', border:'1px solid var(--border)', borderRadius:10}}>
             {result.error ? <div style={{color:'#F87171', fontWeight:700, whiteSpace:'pre-wrap'}}>{result.error}</div> : <>
               <div className="small mono">via {result.via}</div>
+              {result.note && (
+                <div style={{marginTop:6, marginBottom:6, padding:'6px 10px', background:'rgba(59,130,246,0.12)', border:'1px solid rgba(59,130,246,0.3)', borderRadius:6, fontSize:11, color:'#93C5FD', lineHeight:1.4}}>
+                  <b>Auto-Adaptation:</b> {result.note}
+                </div>
+              )}
+              {result.voiceWarning && (
+                <div style={{marginTop:6, marginBottom:6, padding:'6px 10px', background:'rgba(245,158,11,0.12)', border:'1px solid rgba(245,158,11,0.3)', borderRadius:6, fontSize:11, color:'#FBBF24', lineHeight:1.4}}>
+                  {result.voiceWarning}
+                </div>
+              )}
               <div style={{fontWeight:700, wordBreak:'break-all', fontSize:12, marginTop:4}}>{result.outFile}</div>
               {result.outFile?.endsWith('.wav') || result.outFile?.endsWith('.mp3') ? <audio controls src={`file://${result.outFile}`} style={{width:'100%', marginTop:8}}/> : null}
               <div className="row" style={{marginTop:8}}><button className="btn" onClick={()=> window.api.revealOutput(result.outFile)}>Show in folder</button><button className="btn ghost" onClick={()=> navigator.clipboard.writeText(result.outFile)}>Copy</button></div>
@@ -346,12 +356,14 @@ function TTS(){
               <div className="head">
                 <span style={{width:28,height:28,borderRadius:8,display:'grid',placeItems:'center',background:'var(--text)',color:'var(--bg)',fontSize:13}}>◉</span>
                 <b>Clone voice</b>
-                <span className="badge-missing" style={{marginLeft:'auto'}}>
-                  {capabilities.requiresReferenceText ? 'ICL Clone' : 'Acoustic Clone'}
+                <span className={capabilities.requiresVoiceClone ? 'tag' : 'badge-missing'} style={{marginLeft:'auto'}}>
+                  {capabilities.requiresVoiceClone ? 'ICL Clone Model' : (capabilities.requiresReferenceText ? 'ICL Clone' : 'Acoustic Clone')}
                 </span>
               </div>
               <div className="small" style={{marginBottom:10}}>
-                {capabilities.requiresReferenceText
+                {capabilities.requiresVoiceClone
+                  ? 'Qwen3 Base is an ICL cloning model. Drop a custom WAV sample below, or leave empty to auto-use the studio reference sample.'
+                  : capabilities.requiresReferenceText
                   ? 'Drop a clean 10–30s voice sample with transcript below for Qwen3 / GLM ICL cloning.'
                   : 'Drop a clean 10–30s voice sample. Mono, quiet, single speaker (no transcript required).'}
               </div>
@@ -361,10 +373,10 @@ function TTS(){
                 const f=await window.api.chooseFile([{name:'Audio', extensions:['wav','mp3','m4a','flac','ogg']}]); if(f) setVoiceRef(f)
               }}>
                 <div className="icon">◎</div>
-                <div style={{fontWeight:700, fontSize:13}}>{voiceRef ? 'Voice ready' : 'Drop voice here or click'}</div>
-                {!voiceRef && <div className="small" style={{textAlign:'center'}}>wav / mp3 / m4a / flac<br/>10–30s, no music, no echo</div>}
+                <div style={{fontWeight:700, fontSize:13}}>{voiceRef ? 'Voice ready' : (capabilities.requiresVoiceClone ? 'Auto-Reference Active (or drop custom voice)' : 'Drop voice here or click')}</div>
+                {!voiceRef && <div className="small" style={{textAlign:'center'}}>{capabilities.requiresVoiceClone ? 'Default clean reference WAV is auto-applied dynamically\nDrop custom WAV/MP3 to clone your own voice' : 'wav / mp3 / m4a / flac\n10–30s, no music, no echo'}</div>}
                 {voiceRef && <div className="pill mono" style={{maxWidth:'100%', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'}}>{fileName}</div>}
-                <div className="row" style={{justifyContent:'center'}}><span className="kbd">16kHz mono</span>{voiceRef && <button className="btn ghost" style={{padding:'4px 8px', fontSize:11}} onClick={e=>{e.stopPropagation(); setVoiceRef('')}}>✕ Clear</button>}</div>
+                <div className="row" style={{justifyContent:'center'}}><span className="kbd">16kHz mono</span>{voiceRef && <button className="btn ghost" style={{padding:'4px 8px', fontSize:11}} onClick={e=>{e.stopPropagation(); setVoiceRef('')}}>✕ Clear (Use Default)</button>}</div>
               </div>
               {voiceRef && <audio controls src={`file://${voiceRef}`} style={{width:'100%', marginTop:10}}/>}
               <div className="row" style={{marginTop:10}}>
@@ -610,6 +622,11 @@ function Music(){
             ) : (
               <>
                 <div className="small mono">via {result.via}</div>
+                {result.note && (
+                  <div style={{marginTop:6, marginBottom:6, padding:'6px 10px', background:'rgba(59,130,246,0.12)', border:'1px solid rgba(59,130,246,0.3)', borderRadius:6, fontSize:11, color:'#93C5FD', lineHeight:1.4}}>
+                    <b>Auto-Adaptation:</b> {result.note}
+                  </div>
+                )}
                 <div style={{fontWeight:700, wordBreak:'break-all', fontSize:12, marginTop:4}}>{result.outFile}</div>
                 {result.outFile?.endsWith('.wav') && <audio controls src={`file://${result.outFile}`} style={{width:'100%', marginTop:8}}/>}
                 <div className="row" style={{marginTop:8}}>

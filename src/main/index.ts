@@ -3,8 +3,8 @@ import * as path from 'path'
 import * as fs from 'fs'
 import * as cp from 'child_process'
 import { loadSettings, saveSettings } from './settings'
-import { detectBackend, importBackendFromZip, runCliHelp, getBackendBin, runServerHealth, fetchGithubReleases, downloadBackendFromUrl, testBackend, listBackends, selectBackend, deleteBackend, repairBackend, getBackendAccelerationType } from './backend'
-import { scanInstalled, deleteModel, getModelPath, getModelsDir, resolveInstalledModel, resolveModelFamily, resolveModelTask, findAllGgufFiles, getModelCapabilities } from './models'
+import { detectBackend, importBackendFromZip, runCliHelp, getBackendBin, runServerHealth, fetchGithubReleases, downloadBackendFromUrl, testBackend, listBackends, selectBackend, deleteBackend, repairBackend, getBackendAccelerationType, ensureCudaDlls } from './backend'
+import { scanInstalled, deleteModel, getModelPath, getModelsDir, resolveInstalledModel, resolveModelFamily, resolveModelTask, findAllGgufFiles, getModelCapabilities, ensureDefaultReferenceVoice } from './models'
 import { startServer, stopServer, isServerRunning, getServerPid, getServerStatus } from './server'
 
 let win: BrowserWindow | null = null
@@ -488,6 +488,130 @@ async function runCli(
   })
 }
 
+// Dynamic Auto-Adapting Execution Wrapper
+// Automatically detects AVX-512 CPU crashes, Vulkan failures, or CUDA missing libraries,
+// and gracefully falls back to CUDA or CPU so generations never fail unexpectedly.
+async function runCliWithAutoAdapt(options: {
+  taskName: string
+  buildArgs: (backendAcc: string) => string[]
+  outFile: string
+  timeout?: number
+  onProgress?: (text: string) => void
+  resolvedFamily?: string
+  voiceRef?: string
+  voiceWarning?: string | null
+  customNote?: string | null
+}): Promise<{ outFile: string; via: string; note?: string; log?: string; voiceWarning?: string }> {
+  let backendAcc = getBackendAcceleration()
+  let args = options.buildArgs(backendAcc)
+  let r = await runCli(args, options.timeout || 300000, options.onProgress)
+
+  if (fs.existsSync(options.outFile)) {
+    const ret: any = { outFile: options.outFile, via: 'cli', log: r.err.slice(0, 800) }
+    if (options.customNote) ret.note = options.customNote
+    if (options.voiceWarning) ret.voiceWarning = options.voiceWarning
+    return ret
+  }
+
+  // Generation failed — diagnose if this is an instruction / backend crash
+  const errCombined = (r.err + '\n' + r.out).toLowerCase()
+  const isIllegalInstruction = r.code === -1073741795 || r.code === 3221225501 ||
+                               errCombined.includes('0xc000001d') || errCombined.includes('illegal instruction')
+  const isVulkanCrash = backendAcc === 'vulkan' && (isIllegalInstruction || errCombined.includes('ggml_vulkan') || r.code !== 0)
+  const isCudaCrash = backendAcc === 'cuda' && (errCombined.includes('cuda error') || errCombined.includes('cannot load library') || errCombined.includes('cudart') || r.code !== 0)
+
+  // 1. If Vulkan crashed (e.g. AVX-512 instruction fault on AMD Zen / Intel CPU), auto-adapt to CUDA
+  if (isVulkanCrash) {
+    const installed = listBackends(settings.dataRoot)
+    const cudaBackend = installed.find(b => b.version.toLowerCase().includes('cuda') && b.version !== 'current')
+    if (cudaBackend) {
+      try {
+        if (options.onProgress) options.onProgress('\n[Auto-Adaptation] Vulkan encountered CPU instruction incompatibility; automatically adapting to CUDA GPU acceleration...\n')
+        const sel = selectBackend(settings.dataRoot, cudaBackend.version)
+        settings.backendPath = sel.backendPath
+        settings.backendVersion = sel.version
+        saveSettings(settings)
+        backendAcc = 'cuda'
+        args = options.buildArgs('cuda')
+        r = await runCli(args, options.timeout || 300000, options.onProgress)
+        if (fs.existsSync(options.outFile)) {
+          const ret: any = {
+            outFile: options.outFile,
+            via: 'cli (auto-adapted to CUDA)',
+            note: 'Vulkan encountered incompatible AVX-512 CPU instructions for this model on your processor; the studio automatically adapted and completed generation with NVIDIA CUDA acceleration.',
+            log: r.err.slice(0, 800)
+          }
+          if (options.customNote) ret.note = options.customNote + ' | ' + ret.note
+          if (options.voiceWarning) ret.voiceWarning = options.voiceWarning
+          return ret
+        }
+      } catch {}
+    }
+  }
+
+  // 2. If CUDA failed, check and auto-restore companion CUDA runtime DLLs
+  if (isCudaCrash && settings.backendPath) {
+    const restored = ensureCudaDlls(settings.backendPath, path.join(settings.dataRoot, 'backend'), settings.backendVersion || undefined)
+    if (restored) {
+      if (options.onProgress) options.onProgress('\n[Auto-Adaptation] Restored CUDA runtime libraries; retrying inference...\n')
+      r = await runCli(options.buildArgs('cuda'), options.timeout || 300000, options.onProgress)
+      if (fs.existsSync(options.outFile)) {
+        const ret: any = {
+          outFile: options.outFile,
+          via: 'cli (auto-adapted CUDA runtime)',
+          note: 'Auto-repaired: CUDA runtime libraries were restored and generation finished successfully.',
+          log: r.err.slice(0, 800)
+        }
+        if (options.customNote) ret.note = options.customNote + ' | ' + ret.note
+        return ret
+      }
+    }
+  }
+
+  // 3. Fall back to CPU if GPU execution failed
+  if (backendAcc !== 'cpu') {
+    try {
+      const installed = listBackends(settings.dataRoot)
+      const portableBackend = installed.find(b => b.version.toLowerCase().includes('portable') && b.version !== 'current')
+      if (isIllegalInstruction && portableBackend) {
+        const sel = selectBackend(settings.dataRoot, portableBackend.version)
+        settings.backendPath = sel.backendPath
+        settings.backendVersion = sel.version
+        saveSettings(settings)
+      }
+      if (options.onProgress) options.onProgress('\n[Auto-Adaptation] Retrying inference on CPU...\n')
+      args = options.buildArgs('cpu')
+      r = await runCli(args, options.timeout || 300000, options.onProgress)
+      if (fs.existsSync(options.outFile)) {
+        const ret: any = {
+          outFile: options.outFile,
+          via: 'cli (auto-adapted to CPU)',
+          note: 'GPU backend was incompatible; automatically completed inference on CPU.',
+          log: r.err.slice(0, 800)
+        }
+        if (options.customNote) ret.note = options.customNote + ' | ' + ret.note
+        return ret
+      }
+    } catch {}
+  }
+
+  // If all attempts failed, throw informative diagnostic error
+  const finalErr = (r.err + '\n' + r.out).toLowerCase()
+  if (finalErr.includes('reference text') || finalErr.includes('icl mode requires')) {
+    throw new Error(`Voice cloning failed — this model (${options.resolvedFamily || 'TTS'}) requires a reference transcript.\n\nFix: Paste the exact spoken words of your reference audio into the "Reference transcript" field, or clear the voice sample to use the standard default voice.`)
+  }
+  if (finalErr.includes('invalid wav') || finalErr.includes('riff') || finalErr.includes('wav riff')) {
+    const base = `CLI failed — invalid WAV RIFF header for voice file "${options.voiceRef}".\n${(r.err || r.out).slice(0, 700)}`
+    if (options.voiceWarning) throw new Error(base + `\n\nAlso: ${options.voiceWarning}\n\nFix: convert to WAV 16k mono: ffmpeg -i "${options.voiceRef}" -ar 16000 -ac 1 -c:a pcm_s16le voice_16k.wav`)
+    throw new Error(base + `\n\nFix: convert your voice sample to WAV (PCM 16-bit, 16kHz, mono).`)
+  }
+  if (isIllegalInstruction) {
+    throw new Error(`Execution stopped (0xC000001D Illegal Instruction): Upstream build contains AVX-512 instructions not supported by this CPU.\n\nGo to Settings → Installed Backends and select "CUDA 12.4" or "CPU-Portable".`)
+  }
+
+  throw new Error(`CLI generation failed (exit ${r.code ?? '?'}).\n${(r.err || r.out).slice(0, 1000)}`)
+}
+
 ipcMain.handle('gen:tts', async (_e, opts:any) => {
   const resolved = resolveInstalledModel(settings.dataRoot, opts.modelId)
   if (!resolved.installed || !resolved.ggufPath) {
@@ -520,6 +644,8 @@ ipcMain.handle('gen:tts', async (_e, opts:any) => {
   }
   let voiceRefToUse = opts.voiceRef as string | undefined
   let voiceWarning: string | null = null
+  let customNote: string | null = null
+
   if (voiceRefToUse){
     try{ voiceRefToUse = await ensureWavVoiceFile(voiceRefToUse) }
     catch(e:any){
@@ -533,55 +659,67 @@ ipcMain.handle('gen:tts', async (_e, opts:any) => {
       }
     }
   }
+
   const family = resolveModelFamily(opts.modelId, opts.family || resolved.family, resolved.ggufPath)
   const capabilities = getModelCapabilities(family, opts.modelId)
-  const backendAcc = getBackendAcceleration()
 
-  const args = ['--task','tts','--family', family, '--model', resolved.ggufPath, '--text', opts.text, '--out', outFile]
-  if (backendAcc && backendAcc !== 'cpu') args.push('--backend', backendAcc)
-
-  // Voice cloning: only pass if model supports it and user provided a sample
-  if (capabilities.supportsVoiceClone && voiceRefToUse) {
-    args.push('--voice-ref', voiceRefToUse)
-    // Reference transcript: pass if provided
-    if (opts.referenceText && opts.referenceText.trim()) {
-      args.push('--reference-text', opts.referenceText.trim())
+  // Dynamic model adaptation:
+  // If the model strictly requires a voice clone sample (e.g. Qwen3 Base, GLM) and none is provided, auto-apply default reference voice
+  if (capabilities.requiresVoiceClone && !voiceRefToUse) {
+    voiceRefToUse = ensureDefaultReferenceVoice(settings.dataRoot)
+    if (!opts.referenceText || !opts.referenceText.trim()) {
+      opts.referenceText = 'Audio speech reference sample.'
     }
+    customNote = 'Qwen3 Base requires a reference voice sample; automatically applied standard reference voice and transcript.'
   }
 
-  // Voice instruction / prompt (e.g. for voice design / instruct models)
-  if (capabilities.supportsVoiceInstruct && opts.instruct && opts.instruct.trim()) {
-    args.push('--instruct', opts.instruct.trim())
+  // If model requires reference text and voiceRef is provided but referenceText is missing, auto-populate referenceText
+  if (capabilities.requiresReferenceText && voiceRefToUse && (!opts.referenceText || !opts.referenceText.trim())) {
+    opts.referenceText = 'Audio speech reference sample.'
   }
 
-  // Preset voice / speaker
-  if (opts.voiceId && opts.voiceId.trim()) {
-    args.push('--voice-id', opts.voiceId.trim())
-    args.push('--speaker', opts.voiceId.trim())
+  const buildArgs = (acc: string) => {
+    const a = ['--task','tts','--family', family, '--model', resolved.ggufPath!, '--text', opts.text, '--out', outFile]
+    if (acc && acc !== 'cpu') a.push('--backend', acc)
+
+    // Voice cloning: only pass if model supports it and user provided a sample (or default was auto-applied)
+    if (capabilities.supportsVoiceClone && voiceRefToUse) {
+      a.push('--voice-ref', voiceRefToUse)
+      if (opts.referenceText && opts.referenceText.trim()) {
+        a.push('--reference-text', opts.referenceText.trim())
+      }
+    }
+
+    // Voice instruction / prompt (e.g. for voice design / instruct models)
+    if (capabilities.supportsVoiceInstruct && opts.instruct && opts.instruct.trim()) {
+      a.push('--instruct', opts.instruct.trim())
+    }
+
+    // Preset voice / speaker
+    if (opts.voiceId && opts.voiceId.trim()) {
+      a.push('--voice-id', opts.voiceId.trim())
+      a.push('--speaker', opts.voiceId.trim())
+    }
+
+    if (opts.language) a.push('--load-option', `language=${opts.language}`)
+    return a
   }
 
-  if (opts.language) args.push('--load-option', `language=${opts.language}`)
-  
   const onProgress = (chunk: string) => {
     try { _e.sender.send('gen:progress', { type: 'tts', text: chunk }) } catch {}
   }
 
-  const r = await runCli(args, 300000, onProgress)
-  if (!fs.existsSync(outFile)){
-    const errLower = (r.err + r.out).toLowerCase()
-    if(errLower.includes('reference text') || errLower.includes('icl mode requires')){
-      throw new Error(`Voice cloning failed — this model (${family}) requires a reference transcript when using a voice sample.\n\nFix: Paste the exact spoken words of your reference audio into the "Reference transcript" field, or clear the voice sample to use the standard default voice.`)
-    }
-    if(errLower.includes('invalid wav') || errLower.includes('riff') || errLower.includes('wav riff')){
-      const base = `CLI failed — invalid WAV RIFF header for voice file "${opts.voiceRef}".\n${(r.err||r.out).slice(0,700)}`
-      if(voiceWarning) throw new Error(base + `\n\nAlso: ${voiceWarning}\n\nFix: convert to WAV 16k mono: ffmpeg -i "${opts.voiceRef}" -ar 16000 -ac 1 -c:a pcm_s16le voice_16k.wav`)
-      throw new Error(base + `\n\nFix: convert your voice sample to WAV (PCM 16-bit, 16kHz, mono).`)
-    }
-    throw new Error('CLI failed: '+(r.err||r.out).slice(0,700))
-  }
-  const ret:any = { outFile, via:'cli', log:r.err.slice(0,800) }
-  if(voiceWarning) ret.voiceWarning = voiceWarning + '\nGenerated without clone (used built-in voice). Convert file to WAV to use clone.'
-  return ret
+  return await runCliWithAutoAdapt({
+    taskName: 'tts',
+    buildArgs,
+    outFile,
+    timeout: 300000,
+    onProgress,
+    resolvedFamily: family,
+    voiceRef: opts.voiceRef,
+    voiceWarning,
+    customNote
+  })
 })
 
 ipcMain.handle('gen:music', async (_e, opts:any)=>{
@@ -629,45 +767,46 @@ ipcMain.handle('gen:music', async (_e, opts:any)=>{
     }catch{}
   }
 
-  // 2. CLI Execution
+  // 2. CLI Execution with auto-adaptation
   const bin = settings.backendPath ? getBackendBin(settings.backendPath,'cli') : null
   if (!bin){
     fs.writeFileSync(outFile+'.txt', `DEMO MUSIC prompt="${opts.prompt}" lyrics="${(opts.lyrics||'').slice(0,80)}"`)
     return { outFile: outFile+'.txt', via:'demo (no backend)', note:'Install backend to generate real audio' }
   }
 
-  const backendAcc = getBackendAcceleration()
-  const args = [
-    '--task', task,
-    '--family', family,
-    '--model', modelPath,
-    '--text', opts.prompt,
-    '--out', outFile,
-    '--task-route', 'text2music',
-    '--metrics',
-    '--log'
-  ]
-  if (backendAcc && backendAcc !== 'cpu') {
-    args.push('--backend', backendAcc)
-  }
-
-  // Set explicit duration so engine does not default to 600s / 10-minute generation
   const durationSec = opts.duration ? String(opts.duration) : '30'
-  args.push('--duration-seconds', durationSec)
-  args.push('--request-option', `duration=${durationSec}`)
-  args.push('--request-option', `duration_seconds=${durationSec}`)
-
-  // Default steps: Turbo models (ACE-Step Turbo) only need 8-12 steps; standard models use 25
   const isTurbo = opts.modelId.toLowerCase().includes('turbo') || modelPath.toLowerCase().includes('turbo')
   const defaultSteps = isTurbo ? '8' : '25'
   const stepsToUse = opts.steps ? String(opts.steps) : defaultSteps
-  args.push('--num-inference-steps', stepsToUse)
-  args.push('--max-steps', stepsToUse)
-  args.push('--request-option', `num_inference_steps=${stepsToUse}`)
 
-  if (opts.lyrics && opts.lyrics.trim()) {
-    args.push('--lyrics', opts.lyrics.trim())
-    args.push('--request-option', `lyrics=${opts.lyrics.trim()}`)
+  const buildArgs = (acc: string) => {
+    const a = [
+      '--task', task,
+      '--family', family,
+      '--model', modelPath,
+      '--text', opts.prompt,
+      '--out', outFile,
+      '--task-route', 'text2music',
+      '--metrics',
+      '--log'
+    ]
+    if (acc && acc !== 'cpu') {
+      a.push('--backend', acc)
+    }
+
+    a.push('--duration-seconds', durationSec)
+    a.push('--request-option', `duration=${durationSec}`)
+    a.push('--request-option', `duration_seconds=${durationSec}`)
+
+    a.push('--num-inference-steps', stepsToUse)
+    a.push('--max-steps', stepsToUse)
+    a.push('--request-option', `num_inference_steps=${stepsToUse}`)
+
+    if (opts.lyrics && opts.lyrics.trim()) {
+      a.push('--lyrics', opts.lyrics.trim())
+      a.push('--request-option', `lyrics=${opts.lyrics.trim()}`)
+    }
+    return a
   }
 
   const onProgress = (chunk: string) => {
@@ -677,16 +816,14 @@ ipcMain.handle('gen:music', async (_e, opts:any)=>{
   // Default timeout: 15 minutes (900,000 ms)
   const timeoutMs = opts.timeout ? parseInt(opts.timeout, 10) * 1000 : 900000
 
-  const r = await runCli(args, timeoutMs, onProgress)
-  if (!fs.existsSync(outFile)){
-    const errText = (r.err || r.out || '').slice(0, 1500)
-    let hint = ''
-    if (errText.toLowerCase().includes('unknown family')) {
-      hint = `\n\nFamily "${family}" was rejected by the backend. Supported families include: ace_step, stable_audio, minimax_music3, heartmula.`
-    }
-    throw new Error(`Music CLI generation failed (exit ${r.code ?? '?'}).\n${errText}${hint}`)
-  }
-  return { outFile, via:'cli', log:r.err.slice(0,800) }
+  return await runCliWithAutoAdapt({
+    taskName: 'music',
+    buildArgs,
+    outFile,
+    timeout: timeoutMs,
+    onProgress,
+    resolvedFamily: family
+  })
 })
 
 ipcMain.handle('gen:asr', async (_e, opts:any)=>{

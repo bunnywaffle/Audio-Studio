@@ -5,6 +5,7 @@ import * as http from 'http'
 
 export interface ModelCapabilities {
   supportsVoiceClone: boolean
+  requiresVoiceClone: boolean
   requiresReferenceText: boolean
   supportsVoiceInstruct: boolean
   supportsPresetVoices: boolean
@@ -41,6 +42,9 @@ export function getModelCapabilities(family: string, modelId?: string): ModelCap
     'f5_tts', 'glm_tts', 'moss_tts_local', 'moss_tts_nano', 'omnivoice', 'voxcpm2'
   ].includes(fam) || id.includes('clone')
 
+  // Pure ICL voice clone models that REQUIRE a reference voice sample and will abort without one
+  const requiresVoiceClone = (fam === 'qwen3_tts' && !id.includes('customvoice') && !id.includes('voicedesign')) || fam === 'glm_tts'
+
   // Requires exact reference transcript for ICL voice cloning
   const requiresReferenceText = (fam === 'qwen3_tts' && !id.includes('customvoice') && !id.includes('voicedesign')) || fam === 'glm_tts' || fam === 'fireredtts3'
 
@@ -57,11 +61,57 @@ export function getModelCapabilities(family: string, modelId?: string): ModelCap
 
   return {
     supportsVoiceClone,
+    requiresVoiceClone,
     requiresReferenceText,
     supportsVoiceInstruct,
     supportsPresetVoices,
     presetVoices
   }
+}
+
+export function ensureDefaultReferenceVoice(dataRoot: string): string {
+  const voicesDir = path.join(dataRoot, 'voices')
+  fs.mkdirSync(voicesDir, { recursive: true })
+  const defaultWav = path.join(voicesDir, 'default_reference.wav')
+  if (fs.existsSync(defaultWav) && fs.statSync(defaultWav).size > 1000) {
+    return defaultWav
+  }
+
+  // Generate a valid 16kHz mono 16-bit PCM WAV (sine sweep tone, 2.5s)
+  const sampleRate = 16000
+  const durationSec = 2.5
+  const numSamples = Math.floor(sampleRate * durationSec)
+  const bytesPerSample = 2
+  const dataSize = numSamples * bytesPerSample
+  const buffer = Buffer.alloc(44 + dataSize)
+
+  // RIFF header
+  buffer.write('RIFF', 0)
+  buffer.writeUInt32LE(36 + dataSize, 4)
+  buffer.write('WAVE', 8)
+  buffer.write('fmt ', 12)
+  buffer.writeUInt32LE(16, 16)
+  buffer.writeUInt16LE(1, 20)
+  buffer.writeUInt16LE(1, 22)
+  buffer.writeUInt32LE(sampleRate, 24)
+  buffer.writeUInt32LE(sampleRate * bytesPerSample, 28)
+  buffer.writeUInt16LE(bytesPerSample, 32)
+  buffer.writeUInt16LE(16, 34)
+  buffer.write('data', 36)
+  buffer.writeUInt32LE(dataSize, 40)
+
+  for (let i = 0; i < numSamples; i++) {
+    const t = i / sampleRate
+    const envelope = Math.sin((Math.PI * i) / numSamples)
+    const val = 0.5 * Math.sin(2 * Math.PI * 220 * t) + 0.3 * Math.sin(2 * Math.PI * 440 * t) + 0.1 * Math.sin(2 * Math.PI * 880 * t)
+    const sample = Math.floor(val * envelope * 20000)
+    buffer.writeInt16LE(sample, 44 + i * 2)
+  }
+
+  try {
+    fs.writeFileSync(defaultWav, buffer)
+  } catch {}
+  return defaultWav
 }
 
 export interface ResolvedInstalledModel {

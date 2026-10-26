@@ -101,12 +101,17 @@ export async function startServer(backendPath:string, host:string, port:number, 
 }
 
 export async function stopServer(): Promise<void> {
-  if (!serverProc) return
-  const p = serverProc
-  serverProc=null
-  try{ p.kill() }catch{}
-  await new Promise(r=> setTimeout(r, 600))
-  try{ p.kill('SIGKILL' as any) }catch{}
+  if (serverProc) {
+    const p = serverProc
+    serverProc = null
+    try { p.kill() } catch {}
+  }
+  if (process.platform === 'win32') {
+    try { cp.spawnSync('taskkill', ['/F', '/IM', 'audiocpp_server.exe', '/T'], { stdio: 'ignore' }) } catch {}
+  } else {
+    try { cp.spawnSync('pkill', ['-9', '-f', 'audiocpp_server'], { stdio: 'ignore' }) } catch {}
+  }
+  await new Promise(r => setTimeout(r, 300))
 }
 
 export function getServerPid(){ return serverProc?.pid ?? null }

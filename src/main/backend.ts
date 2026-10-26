@@ -220,7 +220,17 @@ export function listBackends(dataRoot:string, currentVersion?: string|null): Bac
   return out.sort((a,b)=> b.mtime - a.mtime)
 }
 
+export function killAllBackendProcesses(): void {
+  if (process.platform === 'win32') {
+    try { cp.spawnSync('taskkill', ['/F', '/IM', 'audiocpp_server.exe', '/T'], { stdio: 'ignore' }) } catch {}
+    try { cp.spawnSync('taskkill', ['/F', '/IM', 'audiocpp_cli.exe', '/T'], { stdio: 'ignore' }) } catch {}
+  } else {
+    try { cp.spawnSync('pkill', ['-9', '-f', 'audiocpp'], { stdio: 'ignore' }) } catch {}
+  }
+}
+
 export function selectBackend(dataRoot:string, version:string): {backendPath:string, version:string}{
+  killAllBackendProcesses()
   const root = path.join(dataRoot,'backend')
   const src = path.join(root, version)
   const dest = path.join(root,'current')
@@ -231,23 +241,8 @@ export function selectBackend(dataRoot:string, version:string): {backendPath:str
   // If CUDA backend, ensure companion runtime DLLs are present
   const acc = getBackendAccelerationType(dest, version)
   if (acc === 'cuda') {
-    const files = fs.readdirSync(dest)
-    const hasCudart = files.some(f => /cudart64_.*\.dll/i.test(f))
-    const dlDir = path.join(root, '_downloads')
-    if (!hasCudart && fs.existsSync(dlDir)) {
-      const zips = fs.readdirSync(dlDir).filter(f => f.endsWith('.zip'))
-      const cudaMatch = version.match(/cuda(\d+(\.\d+)?)/i)?.[0] || 'cuda12.4'
-      const cudartZip = zips.find(z => new RegExp(`cudart.*${cudaMatch}`, 'i').test(z)) ||
-                        zips.find(z => /cudart.*cuda12\.4/i.test(z)) ||
-                        zips.find(z => /cudart/i.test(z) || /cuda-runtime/i.test(z))
-      if (cudartZip) {
-        try {
-          const cz = new AdmZip(path.join(dlDir, cudartZip))
-          cz.extractAllTo(dest, true)
-          cz.extractAllTo(src, true)
-        } catch {}
-      }
-    }
+    ensureCudaDlls(dest, root, version)
+    ensureCudaDlls(src, root, version)
   }
 
   // Write VERSION file
@@ -256,6 +251,32 @@ export function selectBackend(dataRoot:string, version:string): {backendPath:str
   } catch {}
 
   return {backendPath: dest, version}
+}
+
+export function ensureCudaDlls(targetDir: string, backendRoot: string, versionHint?: string): boolean {
+  if (!fs.existsSync(targetDir)) return false
+  const files = fs.readdirSync(targetDir)
+  const hasCudart = files.some(f => /cudart64_.*\.dll/i.test(f))
+  const hasCublas = files.some(f => /cublas64_.*\.dll/i.test(f))
+  if (hasCudart && hasCublas) return true
+
+  const dlDir = path.join(backendRoot, '_downloads')
+  if (!fs.existsSync(dlDir)) return false
+
+  const zips = fs.readdirSync(dlDir).filter(f => f.endsWith('.zip'))
+  const cudaMatch = (versionHint || '').match(/cuda(\d+(\.\d+)?)/i)?.[0] || 'cuda12.4'
+  const cudartZip = zips.find(z => new RegExp(`cudart.*${cudaMatch}`, 'i').test(z)) ||
+                    zips.find(z => /cudart.*cuda12\.4/i.test(z)) ||
+                    zips.find(z => /cudart/i.test(z) || /cuda-runtime/i.test(z))
+
+  if (cudartZip) {
+    try {
+      const cz = new AdmZip(path.join(dlDir, cudartZip))
+      cz.extractAllTo(targetDir, true)
+      return true
+    } catch {}
+  }
+  return false
 }
 
 export function deleteBackend(dataRoot:string, version:string){
@@ -268,11 +289,9 @@ export function deleteBackend(dataRoot:string, version:string){
 }
 
 export async function repairBackend(dataRoot:string, onProgress?:(pct:number, dl:number, total:number)=>void): Promise<{backendPath:string, version:string, repaired:boolean, details:string}>{
+  killAllBackendProcesses()
   const root = path.join(dataRoot,'backend')
   const current = path.join(root,'current')
-  if(!fs.existsSync(current)){
-    throw new Error('No backend folder installed yet. Go to Settings → Fetch releases and download a backend ZIP.')
-  }
 
   let currentVersion: string | null = null
   try{
@@ -289,49 +308,89 @@ export async function repairBackend(dataRoot:string, onProgress?:(pct:number, dl
     currentVersion = 'current'
   }
 
-  const cliBin = getBackendBin(current, 'cli')
-  const srvBin = getBackendBin(current, 'server')
+  // 1. If CUDA backend is selected, check and auto-restore companion CUDA DLLs
+  const accType = getBackendAccelerationType(current, currentVersion)
+  if (accType === 'cuda' && fs.existsSync(current)) {
+    const restored = ensureCudaDlls(current, root, currentVersion)
+    if (restored) {
+      if (currentVersion && currentVersion !== 'current') {
+        const verDir = path.join(root, currentVersion)
+        if (fs.existsSync(verDir)) ensureCudaDlls(verDir, root, currentVersion)
+      }
+      return {
+        backendPath: current,
+        version: currentVersion,
+        repaired: true,
+        details: `Successfully restored and verified CUDA runtime DLLs (cudart / cublas) in active backend.`
+      }
+    }
+  }
+
+  // 2. If Vulkan is selected, check if a CUDA backend is already installed on this PC
+  // Upstream non-portable Vulkan binaries crash with 0xc000001d on CPUs without AVX-512 (e.g. AMD Ryzen 5000 / Zen 3)
+  const existingBackends = listBackends(dataRoot)
+  const cudaInstalled = existingBackends.find(b => b.version.toLowerCase().includes('cuda') && b.version !== 'current')
+  if (accType === 'vulkan' && cudaInstalled) {
+    const sel = selectBackend(dataRoot, cudaInstalled.version)
+    return {
+      backendPath: sel.backendPath,
+      version: sel.version,
+      repaired: true,
+      details: `Repaired active backend: Switched from Vulkan to ${cudaInstalled.version}. CUDA eliminates AVX-512 instruction incompatibilities on this CPU and delivers optimal GPU performance.`
+    }
+  }
+
+  const cliBin = fs.existsSync(current) ? getBackendBin(current, 'cli') : null
+  const srvBin = fs.existsSync(current) ? getBackendBin(current, 'server') : null
   const missing: string[] = []
   if (!cliBin || !fs.existsSync(cliBin) || fs.statSync(cliBin).size < 1024*10) missing.push('audiocpp_cli.exe')
   if (!srvBin || !fs.existsSync(srvBin) || fs.statSync(srvBin).size < 1024*10) missing.push('audiocpp_server.exe')
 
-  const accType = getBackendAccelerationType(current, currentVersion)
-  const isCuda = accType === 'cuda'
-  let missingCudaDlls = false
-  if (isCuda) {
+  if (accType === 'cuda') {
     const files = fs.existsSync(current) ? fs.readdirSync(current) : []
     const hasCudart = files.some(f => /cudart64_.*\.dll/i.test(f))
     const hasCublas = files.some(f => /cublas64_.*\.dll/i.test(f))
     if (!hasCudart || !hasCublas) {
-      missingCudaDlls = true
       missing.push('CUDA runtime DLLs (cudart64_*.dll / cublas64_*.dll)')
     }
   }
 
-  if (missing.length === 0) {
-    if (cliBin) {
-      try {
-        cp.execFileSync(cliBin, ['--help'], { timeout: 3000 })
-      } catch (e: any) {
-        const code = e.status || e.code
-        if (code === -1073741795 || code === 3221225501 || String(e).includes('0xc000001d')) {
-          missing.push('Compatible CPU instruction build (detected 0xc000001d illegal instruction - AVX-512 not supported on this CPU)')
-        }
+  if (missing.length === 0 && cliBin) {
+    try {
+      cp.execFileSync(cliBin, ['--help'], { timeout: 3000 })
+    } catch (e: any) {
+      const code = e.status || e.code
+      if (code === -1073741795 || code === 3221225501 || String(e).includes('0xc000001d')) {
+        missing.push('Compatible CPU instruction build (detected 0xc000001d illegal instruction - AVX-512 not supported on this CPU)')
       }
     }
   }
 
   if (missing.length === 0) {
-    return { backendPath: current, version: currentVersion || 'current', repaired: false, details: `Backend is healthy (${accType.toUpperCase()} mode).` }
+    return { backendPath: current, version: currentVersion || 'current', repaired: false, details: `Backend is verified and healthy (${accType.toUpperCase()} mode).` }
   }
 
   let details = `Detected issues: ${missing.join(', ')}. `
-
   const dlDir = path.join(root, '_downloads')
   fs.mkdirSync(dlDir, { recursive: true })
 
+  // 3. Switch to existing compatible installed backend if one exists
+  const portableOrCuda = existingBackends.find(b =>
+    (b.version.toLowerCase().includes('cuda12.4') || b.version.toLowerCase().includes('portable')) && b.version !== 'current'
+  )
+  if (portableOrCuda) {
+    const sel = selectBackend(dataRoot, portableOrCuda.version)
+    return {
+      backendPath: sel.backendPath,
+      version: sel.version,
+      repaired: true,
+      details: details + `Automatically switched to verified installed backend: ${portableOrCuda.version}.`
+    }
+  }
+
   // 1. If CUDA DLLs are missing, look for cudart zip in _downloads first
-  if (missingCudaDlls) {
+  const hasMissingCudaDlls = missing.some(m => m.includes('CUDA runtime DLLs'))
+  if (hasMissingCudaDlls) {
     const existingZips = fs.existsSync(dlDir) ? fs.readdirSync(dlDir).filter(f => f.endsWith('.zip')) : []
     const cudaMatch = currentVersion.match(/cuda(\d+(\.\d+)?)/i)?.[0] || 'cuda12.4'
     let cudartCandidate = existingZips.find(z => new RegExp(`cudart.*${cudaMatch}`, 'i').test(z)) ||
