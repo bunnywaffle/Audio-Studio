@@ -16,7 +16,7 @@ export default function App(){
     <div className="app">
       <div className="topbar">
         <div className="brand"><div className="logo">◉</div><div>audio.cpp Studio<br/><small>DARK • SLEEK • LOCAL</small></div><span className="badge">v0.2 • ggml</span></div>
-        <span className={`pill ${backend?.hasCli?'live':''}`}>{backend?.hasCli?'● Backend ready':'○ Backend missing'}</span>
+        <span className={`pill ${backend?.hasCli?'live':''}`}>{backend?.hasCli?`● ${backend?.acceleration?.toUpperCase() || 'Backend'} ready`:'○ Backend missing'}</span>
         <span className={`pill ${server?.running?'live':''}`}>{server?.running?`● :${server.port}`:'○ Server off'}</span>
         <div className="right">
           <button
@@ -941,7 +941,7 @@ function SettingsView({settings,setSettings,backend,setBackend,server,setServer}
         <h3><span className="dot"/> Backend — audio.cpp</h3>
         <div style={{padding:12, background:'var(--panel2)', border:'1px solid var(--border)', borderRadius:10}}>
           <div className="row" style={{justifyContent:'space-between'}}><div style={{fontWeight:700, fontSize:13, wordBreak:'break-all'}}>{backend?.path || 'No backend installed'}</div><span className={`pill ${backend?.hasCli?'live':''}`}>{backend?.hasCli?'● CLI ready':'○ missing'}</span></div>
-          <div className="small mono" style={{marginTop:4}}>Version: {backend?.version || settings.backendVersion || '—'} • Current → {backend?.path?.includes('current')?'auto-updates on download':''}</div>
+          <div className="small mono" style={{marginTop:4}}>Version: {backend?.version || settings.backendVersion || '—'} • Mode: <b style={{color: backend?.acceleration==='cuda'?'#38BDF8':backend?.acceleration==='vulkan'?'#A855F7':'#4ADE80'}}>{backend?.acceleration?.toUpperCase() || 'CPU'} ACCELERATION</b> • {backend?.path?.includes('current')?'current active':''}</div>
           <div className="row" style={{marginTop:10, flexWrap:'wrap'}}>
             <button className="btn" onClick={async()=>{const f=await window.api.chooseFile([{name:'Backend ZIP', extensions:['zip']}]); if(f){ const r=await window.api.importBackendZip(f); setBackend(r.info); const ns=await window.api.getSettings(); setSettings(ns)}}}>📦 Import ZIP</button>
             <button className="btn" onClick={async()=>{ try{ const h=await window.api.runCliHelp(); alert(h.slice(0,700)) }catch(e:any){ alert(e.message)} }}>Test --help</button>
@@ -1071,7 +1071,10 @@ function BackendReleases({backend,setBackend,setSettings}:any){
         <button className="btn" disabled={loading} onClick={fetchReleases}>{loading?'Fetching…':'↻ Fetch releases'}</button>
       </div>
       <div className="small" style={{marginTop:6}}>Pulls from <span className="mono">0xShug0/audio.cpp</span> releases. ZIPs → <span className="mono">backend/_downloads</span> → <span className="mono">backend/&lt;version&gt;</span> + <span className="mono">current</span> (updates).</div>
-      <div className="small" style={{marginTop:6, padding:'6px 8px', background:'rgba(250,204,21,.06)', border:'1px solid rgba(250,204,21,.18)', borderRadius:8}}>No NVIDIA GPU? Pick the <b>CPU</b> ZIP. CUDA ZIP needs NVIDIA driver + CUDA 12 + <a href="#" onClick={e=>{e.preventDefault(); require('electron').shell.openExternal('https://aka.ms/vs/17/release/vc_redist.x64.exe')}}>VC++ Redist</a>.</div>
+      <div className="small" style={{marginTop:6, padding:'6px 8px', background:'rgba(250,204,21,.06)', border:'1px solid rgba(250,204,21,.18)', borderRadius:8}}>
+        • <b>NVIDIA GPUs:</b> Pick <b>CUDA 12.4</b> (CUDA companion runtime DLLs are auto-installed).<br/>
+        • <b>AMD / Intel GPUs / CPUs without AVX-512:</b> Pick <b>VULKAN (PORTABLE)</b>. (Non-portable Vulkan requires AVX-512 and will crash on AMD Ryzen 5000 / Zen 3).
+      </div>
       {error && <div style={{marginTop:10, padding:10, background:'#1A0E0E', border:'1px solid #3A1F1F', borderRadius:8, color:'#F87171', fontSize:12}}>{error}</div>}
       {!releases && !loading && !error && <div className="small" style={{marginTop:10, padding:10, background:'#0E0E0F', border:'1px dashed var(--border)', borderRadius:8}}>Click <b>Fetch releases</b> to list latest ZIPs — no browser needed.</div>}
       {releases && <div style={{marginTop:12, display:'grid', gap:8, maxHeight:340, overflow:'auto'}}>
@@ -1080,22 +1083,59 @@ function BackendReleases({backend,setBackend,setSettings}:any){
             <div className="row" style={{justifyContent:'space-between'}}><b style={{fontSize:13}}>{r.tag} — {r.name}</b><a className="small mono" href="#" onClick={e=>{e.preventDefault(); require('electron').shell.openExternal(r.url)}}>GitHub →</a></div>
             <div className="small mono">{new Date(r.publishedAt).toLocaleDateString()} • {r.zipAssets.length} ZIPs</div>
             <div style={{marginTop:8, display:'grid', gap:6}}>
-              {r.zipAssets.map((a:any)=>{
+              {r.zipAssets.filter((a:any) => !a.name.toLowerCase().includes('-lib-') && !a.name.toLowerCase().includes('server-config')).map((a:any)=>{
                 const pct=dl[a.url]
                 const isDl=pct!==undefined && pct<100
                 const lower=a.name.toLowerCase()
                 const isCuda=lower.includes('cuda')
-                const isCpu=lower.includes('cpu') || lower.includes('win-cpu')
-                const badge = isCuda ? 'CUDA' : isCpu ? 'CPU' : lower.includes('vulkan') ? 'VULKAN' : 'ZIP'
-                const badgeColor = isCuda ? 'rgba(56,189,248,.12)' : isCpu ? 'rgba(74,222,128,.12)' : 'rgba(255,255,255,.06)'
+                const isCpu=lower.includes('cpu')
+                const isVulkan=lower.includes('vulkan')
+                const isPortable=lower.includes('portable')
+                const isCudart=lower.includes('cudart')
+
+                let badge = 'ZIP'
+                let badgeColor = 'rgba(255,255,255,.06)'
+                let note = ''
+
+                if (isCudart) {
+                  badge = 'CUDART'
+                  badgeColor = 'rgba(56,189,248,.12)'
+                  note = 'Companion CUDA runtime (auto-installed when downloading CUDA)'
+                } else if (isCuda) {
+                  const ver = lower.includes('13') ? '13.3' : '12.4'
+                  badge = `CUDA ${ver} ⭐`
+                  badgeColor = 'rgba(56,189,248,.18)'
+                  note = 'NVIDIA GPU Acceleration (Auto-installs CUDA runtime)'
+                } else if (isVulkan) {
+                  badge = isPortable ? 'VULKAN (PORTABLE) ⭐' : 'VULKAN (AVX-512)'
+                  badgeColor = isPortable ? 'rgba(168,85,247,.22)' : 'rgba(168,85,247,.10)'
+                  note = isPortable ? 'Compatible with all GPUs & AMD Ryzen / Intel CPUs' : 'Requires AVX-512 (AMD Zen 4+ / Intel 10th+ gen)'
+                } else if (isCpu) {
+                  badge = isPortable ? 'CPU (PORTABLE) ⭐' : 'CPU (AVX-512)'
+                  badgeColor = isPortable ? 'rgba(74,222,128,.18)' : 'rgba(74,222,128,.10)'
+                  note = isPortable ? 'Universal CPU baseline' : 'High-end AVX-512 CPU'
+                }
+
                 return (
                   <div key={a.url} className="release-card">
-                    <div style={{minWidth:0}}><div style={{display:'flex',gap:6,alignItems:'center'}}><span style={{fontSize:10,padding:'2px 6px',borderRadius:6,background:badgeColor,border:'1px solid var(--border)',fontWeight:700}}>{badge}</span><div style={{fontWeight:600, fontSize:12, wordBreak:'break-all'}}>{a.name}</div></div><div className="small mono">{(a.size/1024/1024).toFixed(1)} MB • {a.downloads} downloads</div>{isDl && <div className="progress" style={{marginTop:6}}><i style={{width:`${pct}%`}}></i></div>}</div>
+                    <div style={{minWidth:0}}>
+                      <div style={{display:'flex',gap:6,alignItems:'center'}}>
+                        <span style={{fontSize:10,padding:'2px 6px',borderRadius:6,background:badgeColor,border:'1px solid var(--border)',fontWeight:700}}>{badge}</span>
+                        <div style={{fontWeight:600, fontSize:12, wordBreak:'break-all'}}>{a.name}</div>
+                      </div>
+                      {note && <div className="small" style={{color:'#94A3B8', marginTop:2}}>{note}</div>}
+                      <div className="small mono">{(a.size/1024/1024).toFixed(1)} MB • {a.downloads} downloads</div>
+                      {isDl && <div className="progress" style={{marginTop:6}}><i style={{width:`${pct}%`}}></i></div>}
+                    </div>
                     <button className="btn primary" disabled={isDl} style={{flexShrink:0}} onClick={async()=>{
                       setDl(p=> ({...p,[a.url]:0}))
-                      try{ const res=await window.api.downloadRelease(a.url); setBackend(res.info); alert(`Backend ${res.version} installed — now using ${res.backendPath}\nIf Start still fails with 3221225781, run Test backend above.`)}
+                      try{
+                        const res=await window.api.downloadRelease(a.url)
+                        setBackend(res.info)
+                        alert(`Backend ${res.version} installed — now active at ${res.backendPath}\nHardware mode: ${(res.info?.acceleration||'ready').toUpperCase()}`)
+                      }
                       catch(e:any){ alert(e.message); setDl(p=> {const n={...p}; delete n[a.url]; return n})}
-                    }}>{isDl?`${pct}%`:(backend?.hasCli?'Update →':'Download')}</button>
+                    }}>{isDl?`${pct}%`:(backend?.hasCli?'Install / Switch →':'Download')}</button>
                   </div>
                 )
               })}

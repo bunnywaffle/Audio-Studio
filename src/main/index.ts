@@ -3,7 +3,7 @@ import * as path from 'path'
 import * as fs from 'fs'
 import * as cp from 'child_process'
 import { loadSettings, saveSettings } from './settings'
-import { detectBackend, importBackendFromZip, runCliHelp, getBackendBin, runServerHealth, fetchGithubReleases, downloadBackendFromUrl, testBackend, listBackends, selectBackend, deleteBackend, repairBackend } from './backend'
+import { detectBackend, importBackendFromZip, runCliHelp, getBackendBin, runServerHealth, fetchGithubReleases, downloadBackendFromUrl, testBackend, listBackends, selectBackend, deleteBackend, repairBackend, getBackendAccelerationType } from './backend'
 import { scanInstalled, deleteModel, getModelPath, getModelsDir, resolveInstalledModel, resolveModelFamily, resolveModelTask, findAllGgufFiles, getModelCapabilities } from './models'
 import { startServer, stopServer, isServerRunning, getServerPid, getServerStatus } from './server'
 
@@ -366,12 +366,7 @@ async function ensureAutoServer(){
 }
 
 function getBackendAcceleration(): string {
-  const p = (settings.backendPath || '').toLowerCase()
-  if (p.includes('cuda')) return 'cuda'
-  if (p.includes('hip') || p.includes('rocm')) return 'hip'
-  if (p.includes('vulkan')) return 'vulkan'
-  if (p.includes('metal')) return 'metal'
-  return 'cpu'
+  return getBackendAccelerationType(settings.backendPath, settings.backendVersion)
 }
 
 // Helpers for voice WAV validation

@@ -1,7 +1,7 @@
 import * as cp from 'child_process'
 import * as fs from 'fs'
 import * as path from 'path'
-import { getBackendBin } from './backend'
+import { getBackendBin, getBackendAccelerationType } from './backend'
 
 let serverProc: cp.ChildProcess | null = null
 let serverLog = ''
@@ -10,12 +10,7 @@ export function isServerRunning(){ return serverProc !== null && serverProc.exit
 export function getServerLog(){ return serverLog.slice(-4000) }
 
 function detectServerBackend(backendPath:string): string {
-  const p = (backendPath||'').toLowerCase()
-  if (p.includes('cuda')) return 'cuda'
-  if (p.includes('hip') || p.includes('rocm')) return 'hip'
-  if (p.includes('vulkan')) return 'vulkan'
-  if (p.includes('metal')) return 'metal'
-  return 'cpu'
+  return getBackendAccelerationType(backendPath)
 }
 
 export async function startServer(backendPath:string, host:string, port:number, models: Array<{id:string, family:string, path:string, task:string}>): Promise<number> {
