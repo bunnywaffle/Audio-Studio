@@ -499,7 +499,7 @@ async function runCli(
 // and gracefully falls back to CUDA or CPU so generations never fail unexpectedly.
 async function runCliWithAutoAdapt(options: {
   taskName: string
-  buildArgs: (backendAcc: string) => string[]
+  buildArgs: (backendAcc: string, extraArgs?: string[]) => string[]
   outFile: string
   timeout?: number
   onProgress?: (text: string) => void
@@ -509,7 +509,8 @@ async function runCliWithAutoAdapt(options: {
   customNote?: string | null
 }): Promise<{ outFile: string; via: string; note?: string; log?: string; voiceWarning?: string }> {
   let backendAcc = getBackendAcceleration()
-  let args = options.buildArgs(backendAcc)
+  const extraArgs: string[] = []
+  let args = options.buildArgs(backendAcc, extraArgs)
   let r = await runCli(args, options.timeout || 300000, options.onProgress)
 
   if (fs.existsSync(options.outFile)) {
@@ -519,14 +520,79 @@ async function runCliWithAutoAdapt(options: {
     return ret
   }
 
+  let errCombined = (r.err + '\n' + r.out).toLowerCase()
+
+  // 1. Dynamic Model Parameter Auto-Adaptation (missing reference text, reference audio, or speaker/voice-id)
+  let parameterAdapted = false
+  const adaptedExtra: string[] = []
+
+  if (
+    errCombined.includes('requires reference_text') ||
+    errCombined.includes('requires reference text') ||
+    errCombined.includes('reference transcript') ||
+    errCombined.includes('icl mode requires')
+  ) {
+    if (!args.includes('--reference-text')) {
+      adaptedExtra.push('--reference-text', 'Audio speech reference sample.')
+      parameterAdapted = true
+    }
+  }
+
+  if (
+    errCombined.includes('requires voice clone reference audio') ||
+    errCombined.includes('requires reference audio') ||
+    errCombined.includes('requires --voice-ref')
+  ) {
+    if (!args.includes('--voice-ref')) {
+      const refVoice = ensureDefaultReferenceVoice(settings.dataRoot)
+      adaptedExtra.push('--voice-ref', refVoice)
+      if (!args.includes('--reference-text') && !adaptedExtra.includes('--reference-text')) {
+        adaptedExtra.push('--reference-text', 'Audio speech reference sample.')
+      }
+      parameterAdapted = true
+    }
+  }
+
+  if (
+    errCombined.includes('requires a session voice') ||
+    errCombined.includes('session voice via --voice-id') ||
+    errCombined.includes('requires --voice-id') ||
+    errCombined.includes('requires speaker')
+  ) {
+    if (!args.includes('--voice-id') && !args.includes('--speaker')) {
+      adaptedExtra.push('--voice-id', 'speaker_1', '--speaker', 'speaker_1')
+      parameterAdapted = true
+    }
+  }
+
+  if (parameterAdapted) {
+    if (options.onProgress) {
+      options.onProgress(`\n[Auto-Adaptation] Model requires parameter(s): ${adaptedExtra.join(' ')}; automatically adapting arguments and retrying...\n`)
+    }
+    extraArgs.push(...adaptedExtra)
+    args = options.buildArgs(backendAcc, extraArgs)
+    r = await runCli(args, options.timeout || 300000, options.onProgress)
+    if (fs.existsSync(options.outFile)) {
+      const ret: any = {
+        outFile: options.outFile,
+        via: 'cli (auto-adapted model parameters)',
+        note: `Dynamic auto-adaptation: Model requirement satisfied automatically (${adaptedExtra.join(' ')}).`,
+        log: r.err.slice(0, 800)
+      }
+      if (options.customNote) ret.note = options.customNote + ' | ' + ret.note
+      if (options.voiceWarning) ret.voiceWarning = options.voiceWarning
+      return ret
+    }
+    errCombined = (r.err + '\n' + r.out).toLowerCase()
+  }
+
   // Generation failed — diagnose if this is an instruction / backend crash
-  const errCombined = (r.err + '\n' + r.out).toLowerCase()
   const isIllegalInstruction = r.code === -1073741795 || r.code === 3221225501 ||
-                               errCombined.includes('0xc000001d') || errCombined.includes('illegal instruction')
+                              errCombined.includes('0xc000001d') || errCombined.includes('illegal instruction')
   const isVulkanCrash = backendAcc === 'vulkan' && (isIllegalInstruction || errCombined.includes('ggml_vulkan') || r.code !== 0)
   const isCudaCrash = backendAcc === 'cuda' && (errCombined.includes('cuda error') || errCombined.includes('cannot load library') || errCombined.includes('cudart') || r.code !== 0)
 
-  // 1. If Vulkan crashed (e.g. AVX-512 instruction fault on AMD Zen / Intel CPU), auto-adapt to CUDA
+  // 2. If Vulkan crashed (e.g. AVX-512 instruction fault on AMD Zen / Intel CPU), auto-adapt to CUDA
   if (isVulkanCrash) {
     const installed = listBackends(settings.dataRoot)
     const cudaBackend = installed.find(b => b.version.toLowerCase().includes('cuda') && b.version !== 'current')
@@ -538,7 +604,7 @@ async function runCliWithAutoAdapt(options: {
         settings.backendVersion = sel.version
         saveSettings(settings)
         backendAcc = 'cuda'
-        args = options.buildArgs('cuda')
+        args = options.buildArgs('cuda', extraArgs)
         r = await runCli(args, options.timeout || 300000, options.onProgress)
         if (fs.existsSync(options.outFile)) {
           const ret: any = {
@@ -555,12 +621,12 @@ async function runCliWithAutoAdapt(options: {
     }
   }
 
-  // 2. If CUDA failed, check and auto-restore companion CUDA runtime DLLs
+  // 3. If CUDA failed, check and auto-restore companion CUDA runtime DLLs
   if (isCudaCrash && settings.backendPath) {
     const restored = ensureCudaDlls(settings.backendPath, path.join(settings.dataRoot, 'backend'), settings.backendVersion || undefined)
     if (restored) {
       if (options.onProgress) options.onProgress('\n[Auto-Adaptation] Restored CUDA runtime libraries; retrying inference...\n')
-      r = await runCli(options.buildArgs('cuda'), options.timeout || 300000, options.onProgress)
+      r = await runCli(options.buildArgs('cuda', extraArgs), options.timeout || 300000, options.onProgress)
       if (fs.existsSync(options.outFile)) {
         const ret: any = {
           outFile: options.outFile,
@@ -574,7 +640,7 @@ async function runCliWithAutoAdapt(options: {
     }
   }
 
-  // 3. Fall back to CPU if GPU execution failed
+  // 4. Fall back to CPU if GPU execution failed
   if (backendAcc !== 'cpu') {
     try {
       const installed = listBackends(settings.dataRoot)
@@ -586,7 +652,7 @@ async function runCliWithAutoAdapt(options: {
         saveSettings(settings)
       }
       if (options.onProgress) options.onProgress('\n[Auto-Adaptation] Retrying inference on CPU...\n')
-      args = options.buildArgs('cpu')
+      args = options.buildArgs('cpu', extraArgs)
       r = await runCli(args, options.timeout || 300000, options.onProgress)
       if (fs.existsSync(options.outFile)) {
         const ret: any = {
@@ -603,7 +669,7 @@ async function runCliWithAutoAdapt(options: {
 
   // If all attempts failed, throw informative diagnostic error
   const finalErr = (r.err + '\n' + r.out).toLowerCase()
-  if (finalErr.includes('reference text') || finalErr.includes('icl mode requires')) {
+  if (finalErr.includes('reference text') || finalErr.includes('reference_text') || finalErr.includes('icl mode requires')) {
     throw new Error(`Voice cloning failed — this model (${options.resolvedFamily || 'TTS'}) requires a reference transcript.\n\nFix: Paste the exact spoken words of your reference audio into the "Reference transcript" field, or clear the voice sample to use the standard default voice.`)
   }
   if (finalErr.includes('invalid wav') || finalErr.includes('riff') || finalErr.includes('wav riff')) {
@@ -695,16 +761,18 @@ ipcMain.handle('gen:tts', async (_e, opts:any) => {
     opts.referenceText = 'Audio speech reference sample.'
   }
 
-  const buildArgs = (acc: string) => {
+  const effectiveRefText = (opts.referenceText && opts.referenceText.trim())
+    ? opts.referenceText.trim()
+    : 'Audio speech reference sample.'
+
+  const buildArgs = (acc: string, extraArgs: string[] = []) => {
     const a = ['--task','tts','--family', family, '--model', resolved.ggufPath!, '--text', opts.text, '--out', outFile]
     if (acc && acc !== 'cpu') a.push('--backend', acc)
 
-    // Voice cloning: only pass if model supports it and user provided a sample (or default was auto-applied)
+    // Voice cloning: always pass reference-text whenever reference audio is active to satisfy ICL models dynamically
     if (capabilities.supportsVoiceClone && voiceRefToUse) {
       a.push('--voice-ref', voiceRefToUse)
-      if (opts.referenceText && opts.referenceText.trim()) {
-        a.push('--reference-text', opts.referenceText.trim())
-      }
+      a.push('--reference-text', effectiveRefText)
     }
 
     // Voice instruction / prompt (e.g. for voice design / instruct models)
@@ -719,6 +787,7 @@ ipcMain.handle('gen:tts', async (_e, opts:any) => {
     }
 
     if (opts.language) a.push('--load-option', `language=${opts.language}`)
+    if (extraArgs && extraArgs.length > 0) a.push(...extraArgs)
     return a
   }
 
@@ -796,7 +865,7 @@ ipcMain.handle('gen:music', async (_e, opts:any)=>{
   const defaultSteps = isTurbo ? '8' : '25'
   const stepsToUse = opts.steps ? String(opts.steps) : defaultSteps
 
-  const buildArgs = (acc: string) => {
+  const buildArgs = (acc: string, extraArgs: string[] = []) => {
     const a = [
       '--task', task,
       '--family', family,
@@ -823,6 +892,7 @@ ipcMain.handle('gen:music', async (_e, opts:any)=>{
       a.push('--lyrics', opts.lyrics.trim())
       a.push('--request-option', `lyrics=${opts.lyrics.trim()}`)
     }
+    if (extraArgs && extraArgs.length > 0) a.push(...extraArgs)
     return a
   }
 

@@ -228,7 +228,7 @@ function TTS(){
     supportsVoiceClone: ['pocket_tts', 'qwen3_tts', 'fish_audio', 'higgs_audio_tts', 'index_tts2',
       'chatterbox', 'dramabox', 'dots_tts', 'fireredtts3', 'firered_audio',
       'f5_tts', 'glm_tts', 'moss_tts_local', 'moss_tts_nano', 'omnivoice', 'voxcpm2'].includes(fam) || id.includes('clone'),
-    requiresReferenceText: (fam === 'qwen3_tts' && !id.includes('customvoice') && !id.includes('voicedesign')) || fam === 'glm_tts' || fam === 'fireredtts3',
+    requiresReferenceText: (fam === 'qwen3_tts' && !id.includes('customvoice') && !id.includes('voicedesign')) || fam === 'glm_tts' || fam === 'fireredtts3' || fam === 'omnivoice' || fam === 'firered_audio' || fam === 'f5_tts',
     supportsVoiceInstruct: ['qwen3_tts', 'fireredtts3', 'irodori_tts', 'moss_voicegen', 'omnivoice', 'voxcpm2'].includes(fam) || id.includes('instruct') || id.includes('voicedesign'),
     supportsPresetVoices: ['supertonic', 'neutts', 'magpie_tts', 'pocket_tts', 'qwen3_tts', 'confucius4_tts'].includes(fam),
     presetVoices: fam === 'supertonic' ? ['alba', 'calm_male', 'calm_female', 'energetic', 'narrator'] : undefined
@@ -362,10 +362,10 @@ function TTS(){
               </div>
               <div className="small" style={{marginBottom:10}}>
                 {capabilities.requiresVoiceClone
-                  ? 'Qwen3 Base is an ICL cloning model. Drop a custom WAV sample below, or leave empty to auto-use the studio reference sample.'
+                  ? 'This model requires a reference voice sample. Drop a custom WAV sample below, or leave empty to auto-use the studio reference sample.'
                   : capabilities.requiresReferenceText
-                  ? 'Drop a clean 10–30s voice sample with transcript below for Qwen3 / GLM ICL cloning.'
-                  : 'Drop a clean 10–30s voice sample. Mono, quiet, single speaker (no transcript required).'}
+                  ? 'Drop a clean 10–30s voice sample with transcript below for high-fidelity ICL voice cloning.'
+                  : 'Drop a clean 10–30s voice sample. Mono, quiet, single speaker.'}
               </div>
               <div className={`audio-drop ${drag?'drag':''}`} onDragOver={e=>{e.preventDefault(); setDrag(true)}} onDragLeave={()=> setDrag(false)} onDrop={async e=>{
                 e.preventDefault(); setDrag(false); const f=(e.dataTransfer.files[0] as any)?.path; if(f) setVoiceRef(f)
@@ -384,29 +384,38 @@ function TTS(){
                 <button className="btn" onClick={async()=>{const f=await window.api.chooseFile([{name:'Audio', extensions:['wav','mp3','flac','ogg','m4a']}]); if(f) setVoiceRef(f)}}>Browse</button>
               </div>
 
-              {capabilities.requiresReferenceText ? (
-                <div style={{marginTop:10}}>
+              <div style={{marginTop:10}}>
+                <div className="row" style={{justifyContent:'space-between', marginBottom:4}}>
                   <label className="small" style={{fontWeight:700}}>
-                    Reference transcript <span style={{fontWeight:400, color: voiceRef ? '#F59E0B' : 'var(--muted)'}}>
-                      ({voiceRef ? 'Required for Qwen3 / GLM clone' : 'Required when voice sample is attached'})
-                    </span>
+                    Reference transcript {capabilities.requiresReferenceText ? (
+                      <span style={{fontWeight:400, color: voiceRef ? '#F59E0B' : 'var(--muted)'}}>
+                        ({voiceRef ? 'Recommended for accurate ICL clone' : 'Optional'})
+                      </span>
+                    ) : (
+                      <span style={{fontWeight:400, color: 'var(--muted)'}}>(Optional)</span>
+                    )}
                   </label>
-                  <textarea
-                    className="textarea"
-                    style={{minHeight:56, fontSize:12, borderColor: (voiceRef && !referenceText.trim()) ? 'rgba(245,158,11,0.5)' : undefined}}
-                    value={referenceText}
-                    onChange={e=> setReferenceText(e.target.value)}
-                    placeholder='Exact transcript of reference audio (e.g. "Some call me nature. Others call me Mother Nature..."). Required for Qwen3 ICL mode.'
-                  />
-                  <div className="small" style={{marginTop:4, color:'var(--muted)'}}>
-                    Paste the exact spoken words in your reference audio file so the ICL model matches the voice timbre accurately.
-                  </div>
+                  {voiceRef && !referenceText.trim() && (
+                    <span className="small" style={{color:'var(--accent)', fontSize:11}}>
+                      Auto-adaptation active
+                    </span>
+                  )}
                 </div>
-              ) : (
-                <div style={{marginTop:10, padding:'8px 10px', borderRadius:8, background:'var(--panel2)', border:'1px solid var(--border)', fontSize:11, color:'var(--muted)'}}>
-                  <b style={{color:'var(--text)'}}>Note:</b> {selectedModel?.label || selectedModel?.family} performs direct acoustic voice cloning from the WAV file. <b>No reference transcript is required.</b>
+                <textarea
+                  className="textarea"
+                  style={{minHeight:56, fontSize:12, borderColor: (voiceRef && capabilities.requiresReferenceText && !referenceText.trim()) ? 'rgba(245,158,11,0.5)' : undefined}}
+                  value={referenceText}
+                  onChange={e=> setReferenceText(e.target.value)}
+                  placeholder={capabilities.requiresReferenceText
+                    ? 'Spoken words of reference audio (e.g. "Some call me nature..."). If left empty, a clean reference transcript is auto-applied dynamically.'
+                    : 'Optional reference transcript. If left empty, acoustic cloning is used.'}
+                />
+                <div className="small" style={{marginTop:4, color:'var(--muted)'}}>
+                  {capabilities.requiresReferenceText
+                    ? 'Paste the spoken words from your reference audio for optimal speaker timbre. If left blank, the app auto-adapts dynamically so synthesis never fails.'
+                    : 'Acoustic voice cloning. Providing spoken words can further refine pronunciation and timbre.'}
                 </div>
-              )}
+              </div>
 
               <div style={{marginTop:10, padding:'9px 10px', borderRadius:10, background:'var(--panel2)', border:'1px solid var(--border)', fontSize:11, lineHeight:1.5, color:'var(--muted)'}}>
                 <b style={{color:'var(--text)'}}>Tip</b> — Clear the voice box anytime to generate standard voice without cloning.

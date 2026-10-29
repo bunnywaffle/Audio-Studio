@@ -120,8 +120,8 @@ export function getModelCapabilities(family: string, modelId?: string, spec?: Dy
 
   // Requires exact reference transcript for ICL voice cloning
   const requiresReferenceText = spec
-    ? (requiresVoiceClone || fam === 'qwen3_tts' || fam === 'glm_tts' || fam === 'fireredtts3')
-    : ((fam === 'qwen3_tts' && !id.includes('customvoice') && !id.includes('voicedesign')) || fam === 'glm_tts' || fam === 'fireredtts3')
+    ? (requiresVoiceClone || fam === 'qwen3_tts' || fam === 'omnivoice' || fam === 'glm_tts' || fam === 'fireredtts3' || fam === 'firered_audio' || fam === 'f5_tts')
+    : ((fam === 'qwen3_tts' && !id.includes('customvoice') && !id.includes('voicedesign')) || fam === 'omnivoice' || fam === 'glm_tts' || fam === 'fireredtts3' || fam === 'firered_audio' || fam === 'f5_tts')
 
   // Supports natural language voice instructions
   const supportsVoiceInstruct = spec
