@@ -987,10 +987,10 @@ function SettingsView({settings,setSettings,backend,setBackend,server,setServer}
           )}
 
           <div className="row" style={{marginTop:10, flexWrap:'wrap'}}>
-            <button className="btn" onClick={async()=>{const f=await window.api.chooseFile([{name:'Backend ZIP', extensions:['zip']}]); if(f){ const r=await window.api.importBackendZip(f); setBackend(r.info); const ns=await window.api.getSettings(); setSettings(ns)}}}>📦 Import ZIP</button>
+            <button className="btn" onClick={async()=>{const f=await window.api.chooseFile([{name:'Backend archives', extensions:['zip','gz','tgz']}]); if(f){ const r=await window.api.importBackendZip(f); setBackend(r.info); const ns=await window.api.getSettings(); setSettings(ns)}}}>📦 Import Archive</button>
             <button className="btn" onClick={async()=>{ try{ const h=await window.api.runCliHelp(); alert(h.slice(0,700)) }catch(e:any){ alert(e.message)} }}>Test --help</button>
             <button className="btn" onClick={async()=>{
-              if(!confirm('Repair backend? This will check for missing/corrupt files (audiocpp_cli.exe, server, DLLs) and re-extract or re-download the current version if needed. Continue?')) return
+              if(!confirm('Repair backend? This will check for missing/corrupt files (audiocpp_cli, server, runtime libs) and re-extract or re-download the current version if needed. Continue?')) return
               try{
                 const r:any = await window.api.repairBackend()
                 setBackend(r.info)
@@ -1114,18 +1114,19 @@ function BackendReleases({backend,setBackend,setSettings}:any){
       <div className="row" style={{justifyContent:'space-between'}}><h3 style={{margin:0}}><span className="dot" style={{background:'#FFFFFF'}}/> GitHub Releases — download & update</h3>
         <button className="btn" disabled={loading} onClick={fetchReleases}>{loading?'Fetching…':'↻ Fetch releases'}</button>
       </div>
-      <div className="small" style={{marginTop:6}}>Pulls from <span className="mono">0xShug0/audio.cpp</span> releases. ZIPs → <span className="mono">backend/_downloads</span> → <span className="mono">backend/&lt;version&gt;</span> + <span className="mono">current</span> (updates).</div>
+      <div className="small" style={{marginTop:6}}>Pulls from <span className="mono">0xShug0/audio.cpp</span> releases (Windows .zip, Linux/macOS .tar.gz — filtered to your platform). → <span className="mono">backend/_downloads</span> → <span className="mono">backend/&lt;version&gt;</span> + <span className="mono">current</span> (updates).</div>
       <div className="small" style={{marginTop:6, padding:'6px 8px', background:'rgba(250,204,21,.06)', border:'1px solid rgba(250,204,21,.18)', borderRadius:8}}>
-        • <b>NVIDIA GPUs:</b> Pick <b>CUDA 12.4</b> (CUDA companion runtime DLLs are auto-installed).<br/>
-        • <b>AMD / Intel GPUs / CPUs without AVX-512:</b> Pick <b>VULKAN (PORTABLE)</b>. (Non-portable Vulkan requires AVX-512 and will crash on AMD Ryzen 5000 / Zen 3).
+        • <b>NVIDIA GPUs:</b> Pick <b>CUDA</b> (CUDA companion runtime is auto-installed; Windows: CUDA 12.4/13.3, Linux: CUDA 12.8).<br/>
+        • <b>AMD / Intel GPUs / CPUs without AVX-512:</b> Pick <b>VULKAN (PORTABLE)</b>. (Non-portable Vulkan requires AVX-512 and will crash on AMD Ryzen 5000 / Zen 3).<br/>
+        • <b>Linux note:</b> NVIDIA → <b>ubuntu-x64 CUDA</b> (falls back to vulkan-portable if it crashes); everyone else → <b>ubuntu-x64 VULKAN (PORTABLE)</b>; universal fallback → <b>ubuntu-x64 CPU (PORTABLE)</b>.
       </div>
       {error && <div style={{marginTop:10, padding:10, background:'#1A0E0E', border:'1px solid #3A1F1F', borderRadius:8, color:'#F87171', fontSize:12}}>{error}</div>}
-      {!releases && !loading && !error && <div className="small" style={{marginTop:10, padding:10, background:'#0E0E0F', border:'1px dashed var(--border)', borderRadius:8}}>Click <b>Fetch releases</b> to list latest ZIPs — no browser needed.</div>}
+      {!releases && !loading && !error && <div className="small" style={{marginTop:10, padding:10, background:'#0E0E0F', border:'1px dashed var(--border)', borderRadius:8}}>Click <b>Fetch releases</b> to list the latest backend archives for your platform — no browser needed.</div>}
       {releases && <div style={{marginTop:12, display:'grid', gap:8, maxHeight:340, overflow:'auto'}}>
         {releases.map((r:any)=>(
           <div key={r.tag} style={{padding:10, background:'var(--panel2)', border:'1px solid var(--border)', borderRadius:10}}>
             <div className="row" style={{justifyContent:'space-between'}}><b style={{fontSize:13}}>{r.tag} — {r.name}</b><a className="small mono" href="#" onClick={e=>{e.preventDefault(); require('electron').shell.openExternal(r.url)}}>GitHub →</a></div>
-            <div className="small mono">{new Date(r.publishedAt).toLocaleDateString()} • {r.zipAssets.length} ZIPs</div>
+            <div className="small mono">{new Date(r.publishedAt).toLocaleDateString()} • {r.zipAssets.length} assets</div>
             <div style={{marginTop:8, display:'grid', gap:6}}>
               {r.zipAssets.filter((a:any) => !a.name.toLowerCase().includes('-lib-') && !a.name.toLowerCase().includes('server-config')).map((a:any)=>{
                 const pct=dl[a.url]
@@ -1137,7 +1138,8 @@ function BackendReleases({backend,setBackend,setSettings}:any){
                 const isPortable=lower.includes('portable')
                 const isCudart=lower.includes('cudart')
 
-                let badge = 'ZIP'
+                const isTarGz = lower.endsWith('.tar.gz') || lower.endsWith('.tgz')
+                let badge = isTarGz ? 'TAR.GZ' : 'ZIP'
                 let badgeColor = 'rgba(255,255,255,.06)'
                 let note = ''
 
@@ -1146,8 +1148,8 @@ function BackendReleases({backend,setBackend,setSettings}:any){
                   badgeColor = 'rgba(56,189,248,.12)'
                   note = 'Companion CUDA runtime (auto-installed when downloading CUDA)'
                 } else if (isCuda) {
-                  const ver = lower.includes('13') ? '13.3' : '12.4'
-                  badge = `CUDA ${ver} ⭐`
+                  const m = lower.match(/cuda(\d+(?:\.\d+)?)/)
+                  badge = m ? `CUDA ${m[1]} ⭐` : 'CUDA ⭐'
                   badgeColor = 'rgba(56,189,248,.18)'
                   note = 'NVIDIA GPU Acceleration (Auto-installs CUDA runtime)'
                 } else if (isVulkan) {
@@ -1183,7 +1185,7 @@ function BackendReleases({backend,setBackend,setSettings}:any){
                   </div>
                 )
               })}
-              {r.zipAssets.length===0 && <div className="small">No ZIP assets in this release.</div>}
+              {r.zipAssets.filter((a:any) => !a.name.toLowerCase().includes('-lib-') && !a.name.toLowerCase().includes('server-config')).length===0 && <div className="small">No binary assets for this platform in this release.</div>}
             </div>
           </div>
         ))}

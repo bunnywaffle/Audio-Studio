@@ -3,6 +3,28 @@ import * as path from 'path'
 import * as cp from 'child_process'
 import AdmZip from 'adm-zip'
 
+const ARCHIVE_RE = /\.(zip|tar\.gz|tgz)$/i
+function isArchive(f: string): boolean { return ARCHIVE_RE.test(f) }
+/** Extract a .zip (AdmZip) or .tar.gz/.tgz (system tar — ships with Linux, macOS and Windows 10+). */
+function extractArchive(archivePath: string, destDir: string): void {
+  if (/\.zip$/i.test(archivePath)) {
+    const zip = new AdmZip(archivePath)
+    zip.extractAllTo(destDir, true)
+    return
+  }
+  if (!/\.(tar\.gz|tgz)$/i.test(archivePath)) {
+    throw new Error('Unsupported archive: ' + path.basename(archivePath))
+  }
+  try {
+    cp.execFileSync('tar', ['-xzf', archivePath, '-C', destDir], { stdio: 'ignore' })
+  } catch (e: any) {
+    throw new Error(`Extracting ${path.basename(archivePath)} failed — system 'tar' is required (bundled with Linux, macOS and Windows 10+): ${e.message}`)
+  }
+}
+/** Platform tokens used in upstream 0xShug0/audio.cpp asset names. */
+const PLAT_CUDA = process.platform === 'win32' ? 'windows' : process.platform === 'darwin' ? 'macos' : 'ubuntu'
+const PLAT_BIN = process.platform === 'win32' ? /bin.*windows/i : process.platform === 'darwin' ? /bin.*macos/i : /bin.*(ubuntu|linux)/i
+
 export interface BackendInfo {
   path: string | null
   hasCli: boolean
@@ -23,11 +45,12 @@ export function getBackendAccelerationType(backendPath: string | null, versionHi
     return 'cpu'
   }
 
-  // 1. Direct ggml runtime DLLs
-  if (fs.existsSync(path.join(backendPath, 'ggml-cuda.dll'))) return 'cuda'
-  if (fs.existsSync(path.join(backendPath, 'ggml-vulkan.dll'))) return 'vulkan'
-  if (fs.existsSync(path.join(backendPath, 'ggml-metal.dll'))) return 'metal'
-  if (fs.existsSync(path.join(backendPath, 'ggml-hip.dll')) || fs.existsSync(path.join(backendPath, 'ggml-rocm.dll'))) return 'hip'
+  // 1. Direct ggml runtime backends (.dll on Windows, .so/.dylib elsewhere)
+  const soMatch = (name: string) => fs.existsSync(path.join(backendPath, name))
+  if (soMatch('ggml-cuda.dll') || soMatch('libggml-cuda.so') || soMatch('libggml-cuda.so.0')) return 'cuda'
+  if (soMatch('ggml-vulkan.dll') || soMatch('libggml-vulkan.so') || soMatch('libggml-vulkan.so.0')) return 'vulkan'
+  if (soMatch('ggml-metal.dll') || soMatch('ggml-metal.dylib') || soMatch('libggml-metal.dylib')) return 'metal'
+  if (soMatch('ggml-hip.dll') || soMatch('ggml-rocm.dll') || soMatch('libggml-hip.so') || soMatch('libggml-rocm.so')) return 'hip'
 
   // 2. VERSION file or version hint or folder name
   let version = versionHint || ''
@@ -169,14 +192,13 @@ export function cleanOldTrash(backendRoot: string): void {
 
 export async function importBackendFromZip(zipPath: string, dataRoot: string): Promise<{ backendPath:string, version:string }> {
   killAllBackendProcesses()
-  if (!fs.existsSync(zipPath)) throw new Error('Zip not found: '+zipPath)
-  const zip = new AdmZip(zipPath)
+  if (!fs.existsSync(zipPath)) throw new Error('Backend archive not found: '+zipPath)
   const targetRoot = path.join(dataRoot,'backend')
   cleanOldTrash(targetRoot)
 
   const tmpExtract = path.join(targetRoot,'_tmp_import_'+Date.now())
   fs.mkdirSync(tmpExtract,{recursive:true})
-  zip.extractAllTo(tmpExtract, true)
+  extractArchive(zipPath, tmpExtract)
   // Find folder containing binaries - may be nested
   let sourceDir = tmpExtract
   const findBinaryDir = (dir:string):string|null => {
@@ -194,7 +216,7 @@ export async function importBackendFromZip(zipPath: string, dataRoot: string): P
   const found = findBinaryDir(tmpExtract)
   if (found) sourceDir = found
 
-  const version = path.basename(zipPath).replace(/\.zip$/i,'')
+  const version = path.basename(zipPath).replace(/\.(zip|tar\.gz|tgz)$/i,'')
   const dest = path.join(targetRoot, version)
   safeReplaceDir(sourceDir, dest)
   
@@ -305,26 +327,32 @@ export function selectBackend(dataRoot:string, version:string): {backendPath:str
   return {backendPath: dest, version}
 }
 
+export function hasCudaRuntimeLibs(dir: string): boolean {
+  if (!fs.existsSync(dir)) return false
+  const files = fs.readdirSync(dir)
+  const isWin = process.platform === 'win32'
+  const hasCudart = files.some(f => isWin ? /cudart64_.*\.dll/i.test(f) : /cudart.*\.(so|so\.[\d.]+|dylib)/i.test(f))
+  const hasCublas = files.some(f => isWin ? /cublas64_.*\.dll/i.test(f) : /cublas.*\.(so|so\.[\d.]+|dylib)/i.test(f))
+  return hasCudart && hasCublas
+}
+
 export function ensureCudaDlls(targetDir: string, backendRoot: string, versionHint?: string): boolean {
   if (!fs.existsSync(targetDir)) return false
-  const files = fs.readdirSync(targetDir)
-  const hasCudart = files.some(f => /cudart64_.*\.dll/i.test(f))
-  const hasCublas = files.some(f => /cublas64_.*\.dll/i.test(f))
-  if (hasCudart && hasCublas) return true
+  if (hasCudaRuntimeLibs(targetDir)) return true
 
   const dlDir = path.join(backendRoot, '_downloads')
   if (!fs.existsSync(dlDir)) return false
 
-  const zips = fs.readdirSync(dlDir).filter(f => f.endsWith('.zip'))
-  const cudaMatch = (versionHint || '').match(/cuda(\d+(\.\d+)?)/i)?.[0] || 'cuda12.4'
-  const cudartZip = zips.find(z => new RegExp(`cudart.*${cudaMatch}`, 'i').test(z)) ||
-                    zips.find(z => /cudart.*cuda12\.4/i.test(z)) ||
-                    zips.find(z => /cudart/i.test(z) || /cuda-runtime/i.test(z))
+  const archives = fs.readdirSync(dlDir).filter(isArchive)
+  const cudaMatch = (versionHint || '').match(/cuda(\d+(\.\d+)?)/i)?.[0] || (process.platform === 'win32' ? 'cuda12.4' : 'cuda12.8')
+  const cudartZip = archives.find(z => new RegExp(`cudart.*${PLAT_CUDA}.*${cudaMatch}`, 'i').test(z)) ||
+                    archives.find(z => new RegExp(`cudart.*${cudaMatch}`, 'i').test(z)) ||
+                    archives.find(z => new RegExp(`cudart.*${PLAT_CUDA}`, 'i').test(z)) ||
+                    archives.find(z => /cudart/i.test(z) || /cuda-runtime/i.test(z))
 
   if (cudartZip) {
     try {
-      const cz = new AdmZip(path.join(dlDir, cudartZip))
-      cz.extractAllTo(targetDir, true)
+      extractArchive(path.join(dlDir, cudartZip), targetDir)
       return true
     } catch {}
   }
@@ -395,15 +423,12 @@ export async function repairBackend(dataRoot:string, onProgress?:(pct:number, dl
   const cliBin = fs.existsSync(current) ? getBackendBin(current, 'cli') : null
   const srvBin = fs.existsSync(current) ? getBackendBin(current, 'server') : null
   const missing: string[] = []
-  if (!cliBin || !fs.existsSync(cliBin) || fs.statSync(cliBin).size < 1024*10) missing.push('audiocpp_cli.exe')
-  if (!srvBin || !fs.existsSync(srvBin) || fs.statSync(srvBin).size < 1024*10) missing.push('audiocpp_server.exe')
+  if (!cliBin || !fs.existsSync(cliBin) || fs.statSync(cliBin).size < 1024*10) missing.push(process.platform === 'win32' ? 'audiocpp_cli.exe' : 'audiocpp_cli')
+  if (!srvBin || !fs.existsSync(srvBin) || fs.statSync(srvBin).size < 1024*10) missing.push(process.platform === 'win32' ? 'audiocpp_server.exe' : 'audiocpp_server')
 
   if (accType === 'cuda') {
-    const files = fs.existsSync(current) ? fs.readdirSync(current) : []
-    const hasCudart = files.some(f => /cudart64_.*\.dll/i.test(f))
-    const hasCublas = files.some(f => /cublas64_.*\.dll/i.test(f))
-    if (!hasCudart || !hasCublas) {
-      missing.push('CUDA runtime DLLs (cudart64_*.dll / cublas64_*.dll)')
+    if (!hasCudaRuntimeLibs(current)) {
+      missing.push('CUDA runtime libraries (cudart / cublas)')
     }
   }
 
@@ -428,7 +453,7 @@ export async function repairBackend(dataRoot:string, onProgress?:(pct:number, dl
 
   // 3. Switch to existing compatible installed backend if one exists
   const portableOrCuda = existingBackends.find(b =>
-    (b.version.toLowerCase().includes('cuda12.4') || b.version.toLowerCase().includes('portable')) && b.version !== 'current'
+    ((b.version.toLowerCase().includes('cuda') && b.version.toLowerCase().includes('bin')) || b.version.toLowerCase().includes('portable')) && b.version !== 'current'
   )
   if (portableOrCuda) {
     const sel = selectBackend(dataRoot, portableOrCuda.version)
@@ -440,29 +465,29 @@ export async function repairBackend(dataRoot:string, onProgress?:(pct:number, dl
     }
   }
 
-  // 1. If CUDA DLLs are missing, look for cudart zip in _downloads first
-  const hasMissingCudaDlls = missing.some(m => m.includes('CUDA runtime DLLs'))
-  if (hasMissingCudaDlls) {
-    const existingZips = fs.existsSync(dlDir) ? fs.readdirSync(dlDir).filter(f => f.endsWith('.zip')) : []
-    const cudaMatch = currentVersion.match(/cuda(\d+(\.\d+)?)/i)?.[0] || 'cuda12.4'
-    let cudartCandidate = existingZips.find(z => new RegExp(`cudart.*${cudaMatch}`, 'i').test(z)) ||
-                          existingZips.find(z => /cudart.*cuda12\.4/i.test(z)) ||
-                          existingZips.find(z => /cudart/i.test(z) || /cuda-runtime/i.test(z))
+  // 1. If CUDA runtime libraries are missing, look for a cudart archive in _downloads first
+  const hasMissingCudaRuntime = missing.some(m => m.includes('CUDA runtime'))
+  if (hasMissingCudaRuntime) {
+    const existingArchives = fs.existsSync(dlDir) ? fs.readdirSync(dlDir).filter(isArchive) : []
+    const cudaMatch = currentVersion.match(/cuda(\d+(\.\d+)?)/i)?.[0] || (process.platform === 'win32' ? 'cuda12.4' : 'cuda12.8')
+    let cudartCandidate = existingArchives.find(z => new RegExp(`cudart.*${PLAT_CUDA}.*${cudaMatch}`, 'i').test(z)) ||
+                          existingArchives.find(z => new RegExp(`cudart.*${cudaMatch}`, 'i').test(z)) ||
+                          existingArchives.find(z => new RegExp(`cudart.*${PLAT_CUDA}`, 'i').test(z)) ||
+                          existingArchives.find(z => /cudart/i.test(z) || /cuda-runtime/i.test(z))
 
     if (cudartCandidate) {
       try {
-        const zipPath = path.join(dlDir, cudartCandidate)
-        const zip = new AdmZip(zipPath)
-        zip.extractAllTo(current, true)
+        const archivePath = path.join(dlDir, cudartCandidate)
+        extractArchive(archivePath, current)
         if (currentVersion && currentVersion !== 'current') {
           const verDir = path.join(root, currentVersion)
-          if (fs.existsSync(verDir)) zip.extractAllTo(verDir, true)
+          if (fs.existsSync(verDir)) extractArchive(archivePath, verDir)
         }
         return {
           backendPath: current,
           version: currentVersion,
           repaired: true,
-          details: details + `Successfully restored CUDA runtime DLLs from local archive ${cudartCandidate}.`
+          details: details + `Successfully restored CUDA runtime libraries from local archive ${cudartCandidate}.`
         }
       } catch (e: any) {
         details += `Local cudart extract failed: ${e.message}. `
@@ -473,18 +498,18 @@ export async function repairBackend(dataRoot:string, onProgress?:(pct:number, dl
     try {
       const releases = await fetchGithubReleases(10)
       for (const rel of releases) {
-        let cudartAsset = rel.zipAssets.find(a => new RegExp(`cudart.*${cudaMatch}`, 'i').test(a.name)) ||
-                            rel.zipAssets.find(a => /cudart.*cuda12\.4|cuda-runtime/i.test(a.name))
+        let cudartAsset = rel.zipAssets.find(a => new RegExp(`cudart.*${PLAT_CUDA}.*${cudaMatch}`, 'i').test(a.name)) ||
+                          rel.zipAssets.find(a => new RegExp(`cudart.*${cudaMatch}`, 'i').test(a.name)) ||
+                          rel.zipAssets.find(a => new RegExp(`cudart.*${PLAT_CUDA}`, 'i').test(a.name))
         if (cudartAsset) {
-          const cudartZip = path.join(dlDir, cudartAsset.name)
-          if (!fs.existsSync(cudartZip)) {
-            await downloadFile(cudartAsset.url, cudartZip, onProgress)
+          const cudartArchive = path.join(dlDir, cudartAsset.name)
+          if (!fs.existsSync(cudartArchive)) {
+            await downloadFile(cudartAsset.url, cudartArchive, onProgress)
           }
-          const zip = new AdmZip(cudartZip)
-          zip.extractAllTo(current, true)
+          extractArchive(cudartArchive, current)
           if (currentVersion && currentVersion !== 'current') {
             const verDir = path.join(root, currentVersion)
-            if (fs.existsSync(verDir)) zip.extractAllTo(verDir, true)
+            if (fs.existsSync(verDir)) extractArchive(cudartArchive, verDir)
           }
           return {
             backendPath: current,
@@ -500,35 +525,34 @@ export async function repairBackend(dataRoot:string, onProgress?:(pct:number, dl
   }
 
   // 2. If binaries are missing/corrupted or CPU illegal instruction:
-  const existingZips = fs.existsSync(dlDir) ? fs.readdirSync(dlDir).filter(f => f.endsWith('.zip')) : []
+  const existingArchives = fs.existsSync(dlDir) ? fs.readdirSync(dlDir).filter(isArchive) : []
   let zipCandidate: string | null = null
 
   if (missing.some(m => m.includes('illegal instruction'))) {
-    zipCandidate = existingZips.find(z => /cuda12\.4.*bin.*windows/i.test(z)) ||
-                   existingZips.find(z => /vulkan-portable/i.test(z)) ||
-                   existingZips.find(z => /cpu-portable/i.test(z)) || null
+    zipCandidate = existingArchives.find(z => PLAT_BIN.test(z) && /cuda/i.test(z)) ||
+                   existingArchives.find(z => /vulkan-portable/i.test(z)) ||
+                   existingArchives.find(z => /cpu-portable/i.test(z)) || null
     if (zipCandidate) {
       details += `Found compatible portable/CUDA archive ${zipCandidate}. `
     }
   }
 
   if (!zipCandidate && currentVersion) {
-    zipCandidate = existingZips.find(z => z.includes(currentVersion) && !z.includes('cudart') && !z.includes('lib-')) || null
+    zipCandidate = existingArchives.find(z => z.includes(currentVersion) && !z.includes('cudart') && !z.includes('lib-')) || null
   }
   if (!zipCandidate) {
-    zipCandidate = existingZips.find(z => /cuda12\.4.*bin.*windows/i.test(z)) ||
-                   existingZips.find(z => /bin.*windows/i.test(z) && !z.includes('cudart') && !z.includes('lib-')) || null
+    zipCandidate = existingArchives.find(z => PLAT_BIN.test(z) && /cuda/i.test(z)) ||
+                   existingArchives.find(z => PLAT_BIN.test(z) && !z.includes('cudart') && !z.includes('lib-')) || null
   }
 
   if (zipCandidate) {
-    const fullZip = path.join(dlDir, zipCandidate)
+    const fullArchive = path.join(dlDir, zipCandidate)
     try {
-      const r = await importBackendFromZip(fullZip, dataRoot)
+      const r = await importBackendFromZip(fullArchive, dataRoot)
       if (/cuda/i.test(zipCandidate)) {
-        const czCandidate = existingZips.find(z => /cudart/i.test(z))
+        const czCandidate = existingArchives.find(z => /cudart/i.test(z))
         if (czCandidate) {
-          const cz = new AdmZip(path.join(dlDir, czCandidate))
-          cz.extractAllTo(r.backendPath, true)
+          try { extractArchive(path.join(dlDir, czCandidate), r.backendPath) } catch {}
         }
       }
       return {
@@ -546,9 +570,10 @@ export async function repairBackend(dataRoot:string, onProgress?:(pct:number, dl
   try {
     const releases = await fetchGithubReleases(10)
     for (const rel of releases) {
-      const targetAsset = rel.zipAssets.find(a => /bin-windows-x64-cuda12\.4/i.test(a.name)) ||
-                          rel.zipAssets.find(a => /bin-windows-x64-vulkan-portable/i.test(a.name)) ||
-                          rel.zipAssets.find(a => /bin-windows-x64-cpu-portable/i.test(a.name))
+      const targetAsset = rel.zipAssets.find(a => PLAT_BIN.test(a.name) && /cuda/i.test(a.name)) ||
+                          rel.zipAssets.find(a => PLAT_BIN.test(a.name) && /vulkan-portable/i.test(a.name)) ||
+                          rel.zipAssets.find(a => PLAT_BIN.test(a.name) && /cpu-portable/i.test(a.name)) ||
+                          rel.zipAssets.find(a => PLAT_BIN.test(a.name))
       if (targetAsset) {
         const dlRes = await downloadBackendFromUrl(targetAsset.url, dataRoot, onProgress)
         return {
@@ -602,17 +627,20 @@ export async function testBackend(backendPath:string): Promise<{cli:{ok:boolean,
   } else if(cli.code===dllCode || server.code===dllCode){
     const acc = getBackendAccelerationType(backendPath)
     if (acc === 'cuda') {
-      const files = fs.existsSync(backendPath) ? fs.readdirSync(backendPath) : []
-      const hasCudart = files.some(f => /cudart64_.*\.dll/i.test(f))
-      const hasCublas = files.some(f => /cublas64_.*\.dll/i.test(f))
-      if (!hasCudart || !hasCublas) {
-        hint = 'CUDA runtime DLLs (cudart / cublas) are missing from the backend folder. Click "Repair backend" in Settings to auto-restore them, or select CUDA 12.4.'
-      } else {
+      if (!hasCudaRuntimeLibs(backendPath)) {
+        hint = 'CUDA runtime libraries (cudart / cublas) are missing from the backend folder. Click "Repair backend" in Settings to auto-restore them, or pick the matching CUDA backend for your platform.'
+      } else if (process.platform === 'win32') {
         hint = 'Missing system dependency (exit 3221225781). Install Microsoft VC++ 2015-2022 Redistributable: https://aka.ms/vs/17/release/vc_redist.x64.exe'
+      } else {
+        hint = 'CUDA runtime appears present. If the backend still fails to start, check your NVIDIA driver (nvidia-smi) — it must support the backend\'s CUDA version.'
       }
     } else {
-      const hasVCRuntime = fs.existsSync('C:\\Windows\\System32\\vcruntime140.dll')
-      hint = hasVCRuntime ? 'DLL missing. If running CUDA, click "Repair backend" to install CUDA runtime DLLs. If running Vulkan, check your graphics driver.' : 'vcruntime140.dll missing — install VC++ Redist https://aka.ms/vs/17/release/vc_redist.x64.exe'
+      if (process.platform === 'win32') {
+        const hasVCRuntime = fs.existsSync('C:\\Windows\\System32\\vcruntime140.dll')
+        hint = hasVCRuntime ? 'DLL missing. If running CUDA, click "Repair backend" to install CUDA runtime DLLs. If running Vulkan, check your graphics driver.' : 'vcruntime140.dll missing — install VC++ Redist https://aka.ms/vs/17/release/vc_redist.x64.exe'
+      } else {
+        hint = 'Binary failed to start (missing shared library). On Linux: install the Vulkan runtime (vulkan-loader) for the Vulkan backend, NVIDIA drivers + CUDA for the CUDA backend, or build essentials (glibc, libstdc++) for the CPU backend. Run `ldd` on audiocpp_cli in the backend folder to see what is missing.'
+      }
     }
   } else if (cli.ok && server.ok) {
     const acc = getBackendAccelerationType(backendPath)
@@ -666,12 +694,16 @@ export function fetchGithubReleases(limit=8): Promise<GithubRelease[]>{
         if(res.statusCode !== 200) return reject(new Error(`GitHub ${res.statusCode}: ${data.slice(0,400)}`))
         try{
           const j = JSON.parse(data)
+          const platToken = process.platform === 'win32' ? 'windows-x64' : process.platform === 'darwin' ? 'macos-' : 'ubuntu-x64'
+          const otherPlat = /windows-x64|ubuntu-x64|macos-|linux-x64|debian|fedora/i
+          const isOurs = (name: string) => name.includes(platToken) || !otherPlat.test(name)
           const out: GithubRelease[] = j.map((r:any)=>({
             tag: r.tag_name,
             name: r.name || r.tag_name,
             publishedAt: r.published_at,
             url: r.html_url,
-            zipAssets: (r.assets||[]).filter((a:any)=> /\.zip$/i.test(a.name)).map((a:any)=>({name:a.name, url:a.browser_download_url, size:a.size, downloads:a.download_count}))
+            // Keep this platform's assets plus universal ones; upstream ships Linux/macOS as .tar.gz
+            zipAssets: (r.assets||[]).filter((a:any)=> isArchive(a.name) && isOurs(a.name) && !a.name.includes('-lib-')).map((a:any)=>({name:a.name, url:a.browser_download_url, size:a.size, downloads:a.download_count}))
           }))
           resolve(out)
         }catch(e){ reject(e)}
@@ -769,24 +801,26 @@ export async function downloadBackendFromUrl(url:string, dataRoot:string, onProg
   }
   const r = await importBackendFromZip(zipPath, dataRoot)
 
-  // If this is a CUDA backend zip, also auto-download/extract companion cudart runtime
+  // If this is a CUDA backend archive, also auto-download/extract companion cudart runtime
   if (/cuda/i.test(fileName)) {
-    const cudaMatch = fileName.match(/cuda(\d+(\.\d+)?)/i)?.[0] || 'cuda12.4'
-    const dlZips = fs.existsSync(tmpDir) ? fs.readdirSync(tmpDir).filter(f => f.endsWith('.zip')) : []
-    let localCudart = dlZips.find(z => new RegExp(`cudart.*${cudaMatch}`, 'i').test(z)) ||
-                      dlZips.find(z => /cudart.*cuda12\.4/i.test(z)) ||
-                      dlZips.find(z => /cudart/i.test(z) || /cuda-runtime/i.test(z))
+    const cudaMatch = fileName.match(/cuda(\d+(\.\d+)?)/i)?.[0] || (process.platform === 'win32' ? 'cuda12.4' : 'cuda12.8')
+    const localArchives = fs.existsSync(tmpDir) ? fs.readdirSync(tmpDir).filter(isArchive) : []
+    let localCudart = localArchives.find(z => new RegExp(`cudart.*${PLAT_CUDA}.*${cudaMatch}`, 'i').test(z)) ||
+                      localArchives.find(z => new RegExp(`cudart.*${cudaMatch}`, 'i').test(z)) ||
+                      localArchives.find(z => new RegExp(`cudart.*${PLAT_CUDA}`, 'i').test(z)) ||
+                      localArchives.find(z => /cudart/i.test(z) || /cuda-runtime/i.test(z))
 
     if (!localCudart) {
       try {
         const releases = await fetchGithubReleases(10)
         for (const rel of releases) {
-          const cudartAsset = rel.zipAssets.find(a => new RegExp(`cudart.*${cudaMatch}`, 'i').test(a.name)) ||
-                              rel.zipAssets.find(a => /cudart.*cuda12\.4|cuda-runtime/i.test(a.name))
+          const cudartAsset = rel.zipAssets.find(a => new RegExp(`cudart.*${PLAT_CUDA}.*${cudaMatch}`, 'i').test(a.name)) ||
+                              rel.zipAssets.find(a => new RegExp(`cudart.*${cudaMatch}`, 'i').test(a.name)) ||
+                              rel.zipAssets.find(a => new RegExp(`cudart.*${PLAT_CUDA}`, 'i').test(a.name))
           if (cudartAsset) {
-            const targetZip = path.join(tmpDir, cudartAsset.name)
-            if (!fs.existsSync(targetZip)) {
-              await downloadFile(cudartAsset.url, targetZip)
+            const targetArchive = path.join(tmpDir, cudartAsset.name)
+            if (!fs.existsSync(targetArchive)) {
+              await downloadFile(cudartAsset.url, targetArchive)
             }
             localCudart = cudartAsset.name
             break
@@ -797,10 +831,10 @@ export async function downloadBackendFromUrl(url:string, dataRoot:string, onProg
 
     if (localCudart) {
       try {
-        const cz = new AdmZip(path.join(tmpDir, localCudart))
-        cz.extractAllTo(r.backendPath, true)
+        const cudartArchive = path.join(tmpDir, localCudart)
+        extractArchive(cudartArchive, r.backendPath)
         const verDir = path.join(dataRoot, 'backend', r.version)
-        if (fs.existsSync(verDir)) cz.extractAllTo(verDir, true)
+        if (fs.existsSync(verDir)) extractArchive(cudartArchive, verDir)
       } catch {}
     }
   }
